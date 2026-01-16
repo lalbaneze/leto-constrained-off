@@ -57,6 +57,7 @@ async function loadOptionalCSV(path) {
 
 
 
+
 /* ===============================
    HELPERS
 ================================ */
@@ -750,16 +751,45 @@ function drawCharts(data, comparative){
       }
     }, { displayModeBar: false });
 
-    Plotly.newPlot("chartReason", [
-  { x, y:data.map(d=>d.ENE), type:"bar", name:"ENE", marker:{color: GREEN} },
-  { x, y:data.map(d=>d.CNF), type:"bar", name:"CNF", marker:{color: NAVY} },
-  { x, y:data.map(d=>d.REL), type:"bar", name:"REL", marker:{color: GRAY_DARK} },
-  { x, y:data.map(d=>d.SEM), type:"bar", name:"SEM", marker:{color: GRAY_LIGHT} }
-  ], {
-      ...baseLayout,
-      barmode:"stack",
-      yaxis:{ ...baseLayout.yaxis, title:"Corte (MWh)" }
-    }, { displayModeBar:false });
+  Plotly.newPlot("chartReason", [
+  {
+    x,
+    y: data.map(d => (d.ref > 0 ? (d.ENE / d.ref) * 100 : 0)),
+    type: "bar",
+    name: "ENE",
+    marker: { color: GREEN },
+    hovertemplate: "ENE<br>%{x}<br>%{y:.2f} pp<extra></extra>"
+  },
+  {
+    x,
+    y: data.map(d => (d.ref > 0 ? (d.CNF / d.ref) * 100 : 0)),
+    type: "bar",
+    name: "CNF",
+    marker: { color: NAVY },
+    hovertemplate: "CNF<br>%{x}<br>%{y:.2f} pp<extra></extra>"
+  },
+  {
+    x,
+    y: data.map(d => (d.ref > 0 ? (d.REL / d.ref) * 100 : 0)),
+    type: "bar",
+    name: "REL",
+    marker: { color: GRAY_DARK },
+    hovertemplate: "REL<br>%{x}<br>%{y:.2f} pp<extra></extra>"
+  },
+  {
+    x,
+    y: data.map(d => (d.ref > 0 ? (d.SEM / d.ref) * 100 : 0)),
+    type: "bar",
+    name: "SEM",
+    marker: { color: GRAY_LIGHT },
+    hovertemplate: "SEM<br>%{x}<br>%{y:.2f} pp<extra></extra>"
+  }
+], {
+  ...baseLayout,
+  barmode: "stack",
+  yaxis: { ...baseLayout.yaxis, title: "% corte (pp)", ticksuffix: "%" }
+}, { displayModeBar:false });
+
 
     return;
   }
@@ -770,7 +800,18 @@ function drawCharts(data, comparative){
   // ---------------------------
   const x = data.months;
 
-  const paletteCompanies = [GREEN, NAVY, GRAY_DARK, GRAY_LIGHT];
+  const paletteCompanies = [
+  "#16a34a", // verde
+  "#0b1d3a", // navy
+  "#4b5563", // cinza escuro
+  "#d1d5db", // cinza claro
+  "#065f46", // verde escuro
+  "#22c55e", // verde claro
+  "#64748b", // slate
+  "#10b981"  // teal
+];
+
+
   const companyColor = {};
   data.companies.forEach((emp, i) => companyColor[emp] = paletteCompanies[i % paletteCompanies.length]);
 
@@ -817,36 +858,77 @@ function drawCharts(data, comparative){
     }
   }, { displayModeBar: false });
 
-  // Gráfico 2: stack por modalidade por empresa (pilhas lado a lado)
-  const reasons = ["ENE", "CNF", "REL", "SEM"];
-  const reasonColor = { ENE: GREEN, CNF: NAVY, REL: GRAY_DARK, SEM: GRAY_LIGHT };
+// Gráfico 2 (comparativo): build-up da % (pp) por razão
+// barras lado a lado por empresa com "códigos" (1,2,3...) para não poluir
+const reasons = ["ENE", "CNF", "REL", "SEM"];
+const reasonColor = { ENE: GREEN, CNF: NAVY, REL: GRAY_DARK, SEM: GRAY_LIGHT };
 
+const tracesBottom = [];
 
-  const tracesBottom = [];
+const monthLabels = data.months;     // ["2025-01-31", ...]
+const monthKeys   = data.monthKeys;  // ["2025-01", ...]
 
-  reasons.forEach(rr => {
-    data.companies.forEach((emp, eidx) => {
-      const s = data.series[emp];
-      tracesBottom.push({
-        x,
-        y: s.map(p => p[rr] || 0),
-        type: "bar",
-        name: rr,
-        marker: { color: reasonColor[rr] },
-        offsetgroup: emp,
-        legendgroup: rr,
-        showlegend: eidx === 0
-      });
+// ---- chave empresa -> código curto ----
+const empCode = {};
+data.companies.forEach((emp, idx) => { empCode[emp] = String(idx + 1); });
+
+// texto da chave (mostra no topo do gráfico)
+const keyText = data.companies
+  .map(emp => `${empCode[emp]}=${emp}`)
+  .join(" · ");
+
+// multicategory: [mês, código]
+reasons.forEach(rr => {
+  const xMonth = [];
+  const xEmpCode = [];
+  const y = [];
+
+  // iterar mês primeiro pra agrupar por mês
+  monthKeys.forEach((m, i) => {
+    const mlab = monthLabels[i] || m;
+
+    data.companies.forEach(emp => {
+      const p = data.series[emp][i];
+      const pp = (p && p.ref > 0) ? (((p[rr] || 0) / p.ref) * 100) : 0;
+
+      xMonth.push(mlab);
+      xEmpCode.push(empCode[emp]);   // <-- aqui vai 1,2,3...
+      y.push(pp);
     });
   });
 
-  Plotly.newPlot("chartReason", tracesBottom, {
-    ...baseLayout,
-    barmode: "stack",
-    yaxis: { ...baseLayout.yaxis, title: "Corte (MWh)" },
-    xaxis: { ...baseLayout.xaxis, title: "Fechamento do mês" }
-  }, { displayModeBar: false });
+  tracesBottom.push({
+    type: "bar",
+    name: rr,
+    x: [xMonth, xEmpCode],
+    y,
+    marker: { color: reasonColor[rr] },
+    hovertemplate: `${rr}<br>%{x}<br>%{y:.2f} pp<extra></extra>`
+  });
+});
 
+Plotly.newPlot("chartReason", tracesBottom, {
+  ...baseLayout,
+  barmode: "relative",
+  yaxis: { ...baseLayout.yaxis, title: "% corte (pp)", ticksuffix: "%" },
+  xaxis: {
+    ...baseLayout.xaxis,
+    title: "Fechamento do mês",
+    type: "multicategory",
+    tickangle: -35
+  },
+  // mostra a chave acima do gráfico
+  title: {
+  text: data.companies
+    .map(emp => `${empCode[emp]} - ${emp}`)
+    .join("   ·   "),
+  x: 0,
+  xanchor: "left",
+  font: { size: 13, color: "#111827" }
+}
+
+
+}, { displayModeBar: false });
   return;
 }
 
