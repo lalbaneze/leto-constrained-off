@@ -28,17 +28,20 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
+          pip install -r dashboard/requirements.txt || true
           pip install pandas numpy matplotlib reportlab
 
       - name: Generate PDF
+        working-directory: dashboard
         run: |
+          mkdir -p ../reports
           python scripts/generate_report_full.py \
             --fechamento "${{ inputs.fechamento }}" \
-            --eolica "dashboard/data/coff_eolica_monthly.csv" \
-            --solar "dashboard/data/coff_solar_monthly.csv" \
-            --mapping "dashboard/data/mapping_citi.json" \
-            --pld "dashboard/data/pld_monthly_avg.json" \
-            --out "reports/${{ inputs.out_name }}_${{ inputs.fechamento }}.pdf"
+            --eolica "data/coff_eolica_monthly.csv" \
+            --solar "data/coff_solar_monthly.csv" \
+            --mapping "data/mapping_citi.json" \
+            --pld "data/pld_monthly_avg.json" \
+            --out "../reports/${{ inputs.out_name }}_${{ inputs.fechamento }}.pdf"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
