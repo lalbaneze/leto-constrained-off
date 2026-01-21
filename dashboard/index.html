@@ -41,6 +41,36 @@
     box-shadow: 0 10px 30px rgba(0,0,0,.25);
   }
 
+  .card-header{
+  display: flex;
+  align-items: center;          /* mesma altura */
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card-meta-inline{
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: #ffffff;     /* branco puro */
+  white-space: nowrap;
+}
+
+.card-meta-inline span{
+  opacity: 1;         /* remove variação */
+}
+
+.card-status{
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.92); /* ✅ branco */
+  text-align: right;
+}
+
+
+
+
+
   label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
   input,select{
     width:100%;
@@ -110,12 +140,24 @@
 <div class="container">
 
   <h1>JGP Crédito: Análise de Constrained-Off</h1>
-  <p><small>Lê automaticamente: ./data/coff_eolica_monthly.csv</small></p>
+  
 
   <div class="card">
-    <span id="status">Carregando…</span>
-    <button id="btnReload" style="float:right">Recarregar</button>
+  <div class="card-header">
+    <div class="card-meta-inline">
+      <span id="pld-date">PLD atualizado até: —</span>
+      <span id="ons-date">Dados ONS atualizados até: —</span>
+    </div>
+
+    <button id="btnReload">Recarregar</button>
   </div>
+
+  <div class="card-status">
+    <span id="status">Carregando...</span>
+  </div>
+</div>
+
+
 
   <div class="card">
     <h2>Filtros</h2>

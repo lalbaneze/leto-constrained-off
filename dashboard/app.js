@@ -160,6 +160,16 @@ function setStatus(msg){
   if(el) el.textContent = msg;
 }
 
+function setPLDUpdatedText(txt){
+  const el = document.getElementById("pld-date");
+  if(el) el.textContent = `PLD atualizado até: ${txt || "—"}`;
+}
+
+function setONSUpdatedText(txt){
+  const el = document.getElementById("ons-date");
+  if(el) el.textContent = `Dados ONS atualizados até: ${txt || "—"}`;
+}
+
 function safeGet(id){
   const el = document.getElementById(id);
   if(!el) console.warn("Elemento não encontrado:", id);
@@ -939,6 +949,28 @@ async function init(){
   setStatus("Carregando…");
 
   RAW = await loadAll();
+
+  // --- Datas de atualização (PLD / ONS) ---
+  try {
+    const maxDiaPLD = await buscarPLDMaxDia(); // vem do pld_meta.json
+    setPLDUpdatedText(maxDiaPLD);
+  } catch(e){
+    console.warn("Não consegui ler PLD meta:", e);
+    setPLDUpdatedText("—");
+  }
+
+  // ONS: usa o maior last_instante (eólico + solar) que veio no CSV
+  const lastInst = RAW
+    .map(r => (r.last_instante || "").trim())
+    .filter(Boolean)
+    .sort()
+    .pop();
+
+  // transforma "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DD"
+  const lastONSDate = isoDateFromLastInstante(lastInst);
+
+  setONSUpdatedText(lastONSDate || "—");
+
 
   // opções básicas
   const empresas = uniq(RAW.map(r=>r.empresa));
