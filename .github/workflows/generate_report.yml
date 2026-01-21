@@ -1,0 +1,47 @@
+name: Generate Constrained-Off Report (PDF)
+
+on:
+  workflow_dispatch:
+    inputs:
+      fechamento:
+        description: "Fechamento (YYYY-MM), ex: 2025-12"
+        required: true
+        default: "2025-12"
+      out_name:
+        description: "Nome do arquivo de saída (sem .pdf)"
+        required: false
+        default: "Relatorio_ConstrainedOff_JGP_Credito"
+
+jobs:
+  build-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy matplotlib reportlab
+
+      - name: Generate PDF
+        run: |
+          python scripts/generate_report_full.py \
+            --fechamento "${{ inputs.fechamento }}" \
+            --eolica "dashboard/data/coff_eolica_monthly.csv" \
+            --solar "dashboard/data/coff_solar_monthly.csv" \
+            --mapping "dashboard/data/mapping_citi.json" \
+            --pld "dashboard/data/pld_monthly_avg.json" \
+            --out "reports/${{ inputs.out_name }}_${{ inputs.fechamento }}.pdf"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: constrained-off-report-${{ inputs.fechamento }}
+          path: reports/*.pdf
