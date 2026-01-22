@@ -28,8 +28,8 @@ DATA_DIR = os.path.join(DASHBOARD_DIR, "data")
 RAW_DIR = os.path.join(DATA_DIR, "raw")
 ONS_CACHE_DIR = os.path.join(RAW_DIR, "ons_restricao_coff_eolica_usi")
 
-OUT_MONTHLY_TEST = os.path.join(DATA_DIR, "coff_eolica_monthly_test.csv")
-OUT_RAW_TEST = os.path.join(RAW_DIR, "coff_eolica_raw_citi_test.csv")
+OUT_MONTHLY_TEST = os.path.join(DATA_DIR, "coff_eolica_monthly_test_nan.csv")
+OUT_RAW_TEST = os.path.join(RAW_DIR, "coff_eolica_raw_citi_test_nan.csv")
 
 # =========================
 # HELPERS
@@ -166,7 +166,11 @@ def build_monthly_from_cached_csvs():
             df["val_geracaoreferencia"] = to_num(df["val_geracaoreferencia"])
             df["val_disponibilidade"] = to_num(df["val_disponibilidade"])
 
+            # garantir que valores vazios/nulos virem "NAN" (igual ao PC local)
+            df["cod_razaorestricao"] = df["cod_razaorestricao"].fillna("NAN")
             df["cod_razaorestricao"] = df["cod_razaorestricao"].astype(str).str.strip().str.upper()
+            df.loc[df["cod_razaorestricao"].isin(["", "NONE", "NULL", "<NA>"]), "cod_razaorestricao"] = "NAN"
+
 
             # timestamp opcional
             time_col = None
