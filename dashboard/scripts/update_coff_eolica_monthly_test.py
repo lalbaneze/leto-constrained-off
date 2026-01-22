@@ -11,7 +11,7 @@ DATASET_ID = "restricao_coff_eolica_usi"
 CKAN_API = "https://dados.ons.org.br/api/3/action/package_show"
 
 START_YM = "2025-01"               # só a partir daqui
-ALWAYS_REFRESH_LAST_N = 2          # rebaixa últimos N meses (ONS revisa)
+ALWAYS_REFRESH_LAST_N = 13          # rebaixa últimos N meses (ONS revisa)
 
 # intervalos ONS TM (30 min)
 INTERVAL_HOURS = 0.5
