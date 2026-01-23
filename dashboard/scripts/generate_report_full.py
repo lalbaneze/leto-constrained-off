@@ -561,7 +561,7 @@ def make_overview_page(sty, fechamento_ym: str, all_df: pd.DataFrame, monthly_al
 
     foot = Paragraph(
         f"* Fechamento considerando: {fechamento_label} • Impacto financeiro estimado assumindo PLD médio mensal."
-        f"<br/>* Considera apenas empresas do nosso acompanhamento.",
+        f"<br/>* Ranking restrito às empresas acompanhadas internamente; os demais dados referem-se à base completa do mercado.",
         sty["small"]
     )
 
