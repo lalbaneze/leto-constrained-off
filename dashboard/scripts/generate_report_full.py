@@ -569,7 +569,8 @@ def make_overview_page(sty, fechamento_ym: str, all_df: pd.DataFrame, monthly_al
     img_bot = Image(charts_bottom, width=17.2*cm, height=5.3*cm)
 
     foot = Paragraph(
-        f"* Fechamento considerando: {fechamento_label} * Histórico desde Jan/25 * Impacto financeiro estimado assumindo PLD médio mensal."
+        f"* Histórico desde Jan/2025 * Fechamento considerando: {fechamento_label} "
+        f"<br/>* Impacto financeiro estimado assumindo PLD médio mensal."
         f"<br/>* Ranking restrito às empresas acompanhadas internamente; os demais dados referem-se à base completa do mercado.",
         sty["small"]
     )
