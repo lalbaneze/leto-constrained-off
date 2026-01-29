@@ -5,6 +5,8 @@ const CSV_PATH = "./data/coff_eolica_monthly.csv";   // eólico (já existe)
 const CSV_SOLAR_PATH = "./data/coff_solar_monthly.csv"; // ✅ NOVO (solar)
 const MAP_PATH = "./data/mapping_citi.json";
 
+
+
 // ====== PLD (via arquivos estáticos gerados no build) ======
 let _PLD_MONTHLY = null;
 let _PLD_META = null;
@@ -274,20 +276,19 @@ function normKey(s){
 }
 
 
-  rows.forEach(r=>{
-    const key = r.nom_usina;
-    const m = mapping[key] || mappingNorm[normKey(key)];
-    r.empresa = (m && m.empresa) ? m.empresa : "Não mapeada";
+rows.forEach(r => {
+  const key = r.nom_usina;
+  const m = mapping[key] || mappingNorm[normKey(key)];
+  r.empresa = (m && m.empresa) ? m.empresa : "Não mapeada";
 
-// ✅ só sobrescreve se existir mapping
-if (m && m.tipo) {
-  r.tipo_map = String(m.tipo).toUpperCase();
-}
+  // NÃO sobrescreve r.tipo_map (vem da fonte: EOL ou SOL)
+});
 
-  });
+
 
   return rows;
 }
+
 
 
 /* ===============================
@@ -966,6 +967,19 @@ async function init(){
     .sort()
     .pop();
 
+
+// DEBUG: conferir soma Jan/25 no que o dashboard carregou
+const solJan = RAW
+  .filter(r => r.tipo_map === "SOL" && r.mes === "2025-01")
+  .reduce((s,r)=>s + (r.curtailment_mwh||0), 0);
+
+const eolJan = RAW
+  .filter(r => r.tipo_map === "EOL" && r.mes === "2025-01")
+  .reduce((s,r)=>s + (r.curtailment_mwh||0), 0);
+
+console.log("DEBUG solJan", solJan);
+console.log("DEBUG eolJan", eolJan);
+
   // transforma "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DD"
   const lastONSDate = isoDateFromLastInstante(lastInst);
 
@@ -978,6 +992,8 @@ async function init(){
   const meses = uniq(RAW.map(r=>r.mes));
 
   fillSelectSingle("tipo", tipos, true);
+  safeGet("tipo").value = "SOL";
+
   fillSelectMulti("company", empresas);
   fillSelectMulti("idons", uniq(RAW.map(r=>r.nom_usina)));
 
