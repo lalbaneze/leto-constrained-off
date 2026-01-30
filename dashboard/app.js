@@ -992,7 +992,7 @@ console.log("DEBUG eolJan", eolJan);
   const meses = uniq(RAW.map(r=>r.mes));
 
   fillSelectSingle("tipo", tipos, true);
-  safeGet("tipo").value = "SOL";
+  safeGet("tipo").value = "ALL";
 
   fillSelectMulti("company", empresas);
   fillSelectMulti("idons", uniq(RAW.map(r=>r.nom_usina)));
