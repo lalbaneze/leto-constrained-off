@@ -1,4 +1,4 @@
-name: COFF solar — gerar TESTE e avisar se mudou
+name: COFF solar — gerar TESTE e auto-promover quando permitido
 
 on:
   schedule:
@@ -30,11 +30,11 @@ jobs:
         run: |
           python dashboard/scripts/update_coff_solar_monthly_test.py
 
-      - name: Check diff TEST vs OFFICIAL
+      - name: Check diff TEST vs OFFICIAL (hash)
         id: diffcheck
         run: |
           python - <<'PY'
-          import os, hashlib
+          import os, hashlib, sys
 
           off = "dashboard/data/coff_solar_monthly.csv"
           tst = "dashboard/data/coff_solar_monthly_test.csv"
@@ -47,16 +47,147 @@ jobs:
             return h.hexdigest()
 
           if not os.path.exists(tst):
-            raise SystemExit("TEST file not found: " + tst)
+            print("TEST file not found:", tst)
+            sys.exit(1)
 
-          changed = True
-          if os.path.exists(off):
-            changed = (sha256(off) != sha256(tst))
+          if not os.path.exists(off):
+            print("changed=true")
+            sys.exit(0)
 
+          changed = (sha256(off) != sha256(tst))
           print("changed=" + ("true" if changed else "false"))
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write("changed=" + ("true" if changed else "false") + "\n")
           PY
+
+          CHANGED=$(python - <<'PY'
+          import os, hashlib
+          off = "dashboard/data/coff_solar_monthly.csv"
+          tst = "dashboard/data/coff_solar_monthly_test.csv"
+          def sha256(path):
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+              for chunk in iter(lambda: f.read(1024*1024), b""):
+                h.update(chunk)
+            return h.hexdigest()
+          if not os.path.exists(off):
+            print("true")
+          else:
+            print("true" if sha256(off)!=sha256(tst) else "false")
+          PY)
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
+
+      - name: Policy check (auto-promote only if closed months unchanged; current/prev <= 3%)
+        id: policy
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          import pandas as pd
+          import numpy as np
+          from zoneinfo import ZoneInfo
+          from datetime import datetime
+
+          OFF = "dashboard/data/coff_solar_monthly.csv"
+          TST = "dashboard/data/coff_solar_monthly_test.csv"
+
+          # se não tem oficial, auto-promove (primeira publicação)
+          if not os.path.exists(OFF):
+            print("auto_promote=true")
+            print("changed_months=")
+            print("violations=")
+            raise SystemExit(0)
+
+          off = pd.read_csv(OFF)
+          tst = pd.read_csv(TST)
+
+          # tenta achar a coluna de mês (prioriza nomes comuns)
+          month_col = None
+          for c in ["ym","month","mes","competencia","competência","ref","reference"]:
+            if c in off.columns and c in tst.columns:
+              month_col = c
+              break
+          if month_col is None:
+            month_col = off.columns[0]
+
+          def norm_ym(s):
+            s = str(s).strip()
+            if len(s) >= 7 and s[4] == "-":
+              return s[:7]
+            if len(s) == 6 and s.isdigit():
+              return s[:4] + "-" + s[4:]
+            return s
+
+          off[month_col] = off[month_col].map(norm_ym)
+          tst[month_col] = tst[month_col].map(norm_ym)
+
+          now = datetime.now(ZoneInfo("America/Sao_Paulo"))
+          cur_ym = now.strftime("%Y-%m")
+          y = now.year
+          m = now.month - 1
+          if m == 0:
+            m = 12
+            y -= 1
+          prev_ym = f"{y:04d}-{m:02d}"
+
+          off_i = off.set_index(month_col)
+          tst_i = tst.set_index(month_col)
+
+          all_months = sorted(set(off_i.index).union(set(tst_i.index)))
+
+          common_cols = [c for c in off_i.columns if c in tst_i.columns]
+          num_cols = []
+          for c in common_cols:
+            o = pd.to_numeric(off_i[c], errors="coerce")
+            t = pd.to_numeric(tst_i[c], errors="coerce")
+            if (o.notna().any() or t.notna().any()):
+              num_cols.append(c)
+
+          def month_max_rel_diff(ym):
+            if ym not in off_i.index or ym not in tst_i.index:
+              return None, True  # row add/rem => mudou
+            max_rel = 0.0
+            changed = False
+            for c in num_cols:
+              o = pd.to_numeric(off_i.loc[ym, c], errors="coerce")
+              t = pd.to_numeric(tst_i.loc[ym, c], errors="coerce")
+              if isinstance(o, pd.Series): o = o.iloc[0]
+              if isinstance(t, pd.Series): t = t.iloc[0]
+              if pd.isna(o) and pd.isna(t):
+                continue
+              if (not pd.isna(o)) and (not pd.isna(t)) and np.isclose(o, t, rtol=1e-9, atol=1e-12):
+                continue
+              changed = True
+              if pd.isna(o) and not pd.isna(t):
+                rel = float("inf")
+              else:
+                denom = max(abs(float(o)), 1e-12) if not pd.isna(o) else 1e-12
+                rel = abs(float(t) - float(o)) / denom
+              max_rel = max(max_rel, rel)
+            return max_rel, changed
+
+          changed_months = []
+          violations = []
+
+          for ym in all_months:
+            rel, changed = month_max_rel_diff(ym)
+            if not changed:
+              continue
+
+            changed_months.append(ym)
+
+            # só pode mudar mês atual e/ou anterior
+            if ym not in (cur_ym, prev_ym):
+              violations.append(f"{ym}:changed_closed_month")
+              continue
+
+            # para mês permitido, checa limite 3%
+            if rel is None:
+              continue
+            if rel > 0.03:
+              violations.append(f"{ym}:over_3pct ({rel*100:.2f}%)")
+
+          auto_promote = (len(violations) == 0)
+          print("auto_promote=" + ("true" if auto_promote else "false"))
+          print("changed_months=" + ",".join(changed_months))
+          print("violations=" + ",".join(violations))
 
       - name: Auto-check summary (TEST vs OFFICIAL)
         id: autosum
@@ -76,8 +207,20 @@ jobs:
           print(out)
           PY
 
-      - name: Create/Update PR with TEST file only (if changed)
-        if: steps.diffcheck.outputs.changed == 'true'
+      - name: Promote TEST -> OFFICIAL and push (only when policy allows)
+        if: steps.diffcheck.outputs.changed == 'true' && steps.policy.outputs.auto_promote == 'true'
+        run: |
+          cp dashboard/data/coff_solar_monthly_test.csv dashboard/data/coff_solar_monthly.csv
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add dashboard/data/coff_solar_monthly.csv
+          git commit -m "Update COFF solar (auto) — apenas mês atual/anterior <= 3%" || exit 0
+          git push
+
+      - name: Create/Update PR with TEST file only (if changed AND policy blocks)
+        if: steps.diffcheck.outputs.changed == 'true' && steps.policy.outputs.auto_promote != 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           branch: bot/coff-solar-test
@@ -86,10 +229,13 @@ jobs:
           body: |
             **Auto-check:** ${{ steps.autosum.outputs.summary }}
 
+            **Policy check (bloqueou auto-update):**
+            - changed_months: ${{ steps.policy.outputs.changed_months }}
+            - violations: ${{ steps.policy.outputs.violations }}
+
             Atualização diária gerou diferença entre:
             - oficial: dashboard/data/coff_solar_monthly.csv
             - teste:   dashboard/data/coff_solar_monthly_test.csv
-
 
             ✅ O site NÃO foi atualizado automaticamente.
             Revise o diff do TESTE. Se estiver ok, promova manualmente copiando:
