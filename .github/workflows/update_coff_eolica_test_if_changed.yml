@@ -76,155 +76,9 @@ jobs:
           PY)
           echo "changed=$CHANGED" >> $GITHUB_OUTPUT
 
-      # ========= NOVO: policy check =========
       - name: Policy check (auto-promote only if closed months unchanged; current/prev <= 3%)
         id: policy
         run: |
-          python - <<'PY'
-          import os
-          import pandas as pd
-          import numpy as np
-          from zoneinfo import ZoneInfo
-          from datetime import datetime
-
-          OFF = "dashboard/data/coff_eolica_monthly.csv"
-          TST = "dashboard/data/coff_eolica_monthly_test.csv"
-
-          # se não tem oficial, auto-promove (primeira publicação)
-          if not os.path.exists(OFF):
-            print("auto_promote=true")
-            print("reason=no_official_yet")
-            print("changed_months=")
-            raise SystemExit(0)
-
-          off = pd.read_csv(OFF)
-          tst = pd.read_csv(TST)
-
-          # tenta achar a coluna de mês (prioriza nomes comuns)
-          month_col = None
-          for c in ["ym","month","mes","competencia","competência","ref","reference"]:
-            if c in off.columns and c in tst.columns:
-              month_col = c
-              break
-          if month_col is None:
-            # fallback: primeira coluna
-            month_col = off.columns[0]
-
-          # normaliza mês para string YYYY-MM (mantém se já estiver)
-          def norm_ym(s):
-            s = str(s).strip()
-            # se vier tipo YYYY-MM-DD, corta
-            if len(s) >= 7 and s[4] == "-" and s[7:8] in ["-", ""]:
-              return s[:7]
-            # se vier tipo YYYYMM
-            if len(s) == 6 and s.isdigit():
-              return s[:4] + "-" + s[4:]
-            return s
-
-          off[month_col] = off[month_col].map(norm_ym)
-          tst[month_col] = tst[month_col].map(norm_ym)
-
-          # define mês atual e anterior (America/Sao_Paulo)
-          now = datetime.now(ZoneInfo("America/Sao_Paulo"))
-          cur_ym = now.strftime("%Y-%m")
-          # mês anterior
-          y = now.year
-          m = now.month - 1
-          if m == 0:
-            m = 12
-            y -= 1
-          prev_ym = f"{y:04d}-{m:02d}"
-
-          # monta índices
-          off_i = off.set_index(month_col)
-          tst_i = tst.set_index(month_col)
-
-          all_months = sorted(set(off_i.index).union(set(tst_i.index)))
-
-          # colunas numéricas comuns
-          common_cols = [c for c in off_i.columns if c in tst_i.columns]
-          num_cols = []
-          for c in common_cols:
-            # tenta converter
-            o = pd.to_numeric(off_i[c], errors="coerce")
-            t = pd.to_numeric(tst_i[c], errors="coerce")
-            if (o.notna().any() or t.notna().any()):
-              num_cols.append(c)
-
-          # função para detectar mudança relevante em um mês
-          def month_max_rel_diff(ym):
-            if ym not in off_i.index or ym not in tst_i.index:
-              return None, True  # None e mudou (row adicionada/removida)
-            max_rel = 0.0
-            changed = False
-            for c in num_cols:
-              o = pd.to_numeric(off_i.loc[ym, c], errors="coerce")
-              t = pd.to_numeric(tst_i.loc[ym, c], errors="coerce")
-
-              # pode ser série (se tiver duplicado) -> pega o primeiro
-              if isinstance(o, pd.Series): o = o.iloc[0]
-              if isinstance(t, pd.Series): t = t.iloc[0]
-
-              if pd.isna(o) and pd.isna(t):
-                continue
-
-              # se ambos existem e são muito próximos, ignora
-              if (not pd.isna(o)) and (not pd.isna(t)) and np.isclose(o, t, rtol=1e-9, atol=1e-12):
-                continue
-
-              changed = True
-
-              # calcula diff relativo (abs) vs oficial
-              if pd.isna(o) and not pd.isna(t):
-                rel = float("inf")
-              else:
-                denom = max(abs(float(o)), 1e-12) if not pd.isna(o) else 1e-12
-                rel = abs(float(t) - float(o)) / denom
-              max_rel = max(max_rel, rel)
-
-            return max_rel, changed
-
-          changed_months = []
-          violations = []
-
-          for ym in all_months:
-            rel, changed = month_max_rel_diff(ym)
-            if not changed:
-              continue
-
-            changed_months.append(ym)
-
-            # regra: só pode mudar cur_ym e/ou prev_ym
-            if ym not in (cur_ym, prev_ym):
-              violations.append(f"{ym}:changed_closed_month")
-              continue
-
-            # se for um dos permitidos, checa limite 3%
-            # rel pode ser None (row add/rem) -> trata como violação se não for cur/prev
-            if rel is None:
-              # row add/rem no mês permitido: OK (ex.: mês novo aparece no teste)
-              continue
-
-            if rel > 0.03:
-              violations.append(f"{ym}:over_3pct ({rel*100:.2f}%)")
-
-          auto_promote = (len(violations) == 0)
-
-          print("auto_promote=" + ("true" if auto_promote else "false"))
-          print("reason=" + ("ok" if auto_promote else "violations"))
-          print("changed_months=" + ",".join(changed_months))
-          print("violations=" + ",".join(violations))
-          PY
-
-          # exporta outputs
-          AUTO=$(python - <<'PY'
-          import os, re
-          # lê o log do step não é trivial aqui; então re-roda a lógica mínima via env outputs no próprio step anterior
-          # (GitHub Actions pega os "print key=value" automaticamente COMO LOG, mas não como output)
-          # => vamos simplesmente marcar outputs pegando do arquivo GITHUB_OUTPUT já escrito por este step
-          print("ok")
-          PY)
-          # O output real já está sendo inferido pelo "print key=value"?? não. Então vamos capturar com uma segunda chamada:
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import os
           import pandas as pd
@@ -235,6 +89,7 @@ jobs:
           OFF = "dashboard/data/coff_eolica_monthly.csv"
           TST = "dashboard/data/coff_eolica_monthly_test.csv"
 
+          # se não tem oficial, auto-promove
           if not os.path.exists(OFF):
             print("auto_promote=true")
             print("changed_months=")
@@ -244,6 +99,7 @@ jobs:
           off = pd.read_csv(OFF)
           tst = pd.read_csv(TST)
 
+          # coluna de mês
           month_col = None
           for c in ["ym","month","mes","competencia","competência","ref","reference"]:
             if c in off.columns and c in tst.columns:
@@ -315,12 +171,16 @@ jobs:
             rel, changed = month_max_rel_diff(ym)
             if not changed:
               continue
+
             changed_months.append(ym)
+
             if ym not in (cur_ym, prev_ym):
               violations.append(f"{ym}:changed_closed_month")
               continue
+
             if rel is None:
               continue
+
             if rel > 0.03:
               violations.append(f"{ym}:over_3pct ({rel*100:.2f}%)")
 
@@ -348,7 +208,6 @@ jobs:
           print(out)
           PY
 
-      # ========= NOVO: promover automaticamente =========
       - name: Promote TEST -> OFFICIAL and push (only when policy allows)
         if: steps.diffcheck.outputs.changed == 'true' && steps.policy.outputs.auto_promote == 'true'
         run: |
@@ -361,7 +220,6 @@ jobs:
           git commit -m "Update COFF eólica (auto) — apenas mês atual/anterior <= 3%" || exit 0
           git push
 
-      # ========= PR apenas quando mudou, mas NÃO pode auto-promover =========
       - name: Create/Update PR with TEST file only (if changed AND policy blocks)
         if: steps.diffcheck.outputs.changed == 'true' && steps.policy.outputs.auto_promote != 'true'
         uses: peter-evans/create-pull-request@v6
