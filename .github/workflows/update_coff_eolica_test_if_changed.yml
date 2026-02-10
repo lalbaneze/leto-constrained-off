@@ -76,7 +76,7 @@ jobs:
           PY)
           echo "changed=$CHANGED" >> $GITHUB_OUTPUT
 
-      - name: Policy check (auto-promote only if closed months unchanged; current/prev <= 3%)
+      - name: Policy check (auto-promote only if closed months unchanged; current free; prev <= 5%)
         id: policy
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
@@ -174,15 +174,21 @@ jobs:
 
             changed_months.append(ym)
 
+            # Meses fechados: qualquer mudança bloqueia
             if ym not in (cur_ym, prev_ym):
               violations.append(f"{ym}:changed_closed_month")
               continue
 
+            # Mês atual: livre (sem limite)
+            if ym == cur_ym:
+              continue
+
+            # Mês anterior: limite 5%
             if rel is None:
               continue
 
-            if rel > 0.03:
-              violations.append(f"{ym}:over_3pct ({rel*100:.2f}%)")
+            if rel > 0.05:
+              violations.append(f"{ym}:over_5pct ({rel*100:.2f}%)")
 
           auto_promote = (len(violations) == 0)
           print("auto_promote=" + ("true" if auto_promote else "false"))
@@ -217,7 +223,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add dashboard/data/coff_eolica_monthly.csv
-          git commit -m "Update COFF eólica (auto) — apenas mês atual/anterior <= 3%" || exit 0
+          git commit -m "Update COFF eólica (auto) — mês atual livre; mês anterior <= 5%" || exit 0
           git push
 
       - name: Create/Update PR with TEST file only (if changed AND policy blocks)
