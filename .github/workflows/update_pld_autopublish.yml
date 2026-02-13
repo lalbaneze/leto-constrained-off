@@ -25,33 +25,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Test PowerBI link (Painel de Preços)
+      # -------------------------------
+      # Atualiza a base de PLD via Power BI (horário)
+      # -------------------------------
+      - name: Update PLD DB (PowerBI - horário)
+        env:
+          POWERBI_VIEW_URL: "https://app.powerbi.com/view?r=eyJrIjoiNjk2NzUyNmEtNGZkMy00NDZhLWI4ZjgtMzEyMzhiMDA4NGRkIiwidCI6ImQ3YzNlNTA2LWVmODUtNDM4Ni04ZTU0LTJkZmNkYzgwMTdkMCJ9"
         run: |
-          python - <<'PY'
-          import requests
-          url = "https://app.powerbi.com/view?r=eyJrIjoiNjk2NzUyNmEtNGZkMy00NDZhLWI4ZjgtMzEyMzhiMDA4NGRkIiwidCI6ImQ3YzNlNTA2LWVmODUtNDM4Ni04ZTU0LTJkZmNkYzgwMTdkMCJ9"
-          r = requests.get(url, timeout=30)
-          print("status:", r.status_code)
-          print("content-type:", r.headers.get("content-type"))
-          print("len:", len(r.text))
-          PY
-          
-      - name: Discover resource_ids (CKAN search)
-        run: |
-          python - <<'PY'
-          import requests
+          python pld_ccee/src/update_pld_powerbi_horario.py
 
-          base = "https://dadosabertos.ccee.org.br/api/3/action"
-          q = "pld_horario_2025 OR pld_horario_2024 OR pld_horario"
-          r = requests.get(f"{base}/package_search", params={"q": q, "rows": 5}, timeout=60)
-          print("status:", r.status_code)
-          print(r.text[:2000])
-          PY
-
-      - name: Update PLD DB (CCEE)
-        run: |
-          python pld_ccee/src/update_pld_2025.py
-
+      # -------------------------------
+      # Debug simples para validar se atualizou
+      # -------------------------------
       - name: Debug PLD max_dia from sqlite
         run: |
           python - << 'PY'
@@ -63,11 +48,16 @@ jobs:
           print("max_dia:", r[1])
           PY
 
+      # -------------------------------
+      # Gera os JSONs de teste (igual ao seu pipeline atual)
+      # -------------------------------
       - name: Export PLD TEST JSON
         run: |
           python export_pld_json_test.py
 
-      # Só publica se max_dia do TEST for maior que o oficial (tem dado novo)
+      # -------------------------------
+      # Decide se publica
+      # -------------------------------
       - name: Decide if publish
         id: decide
         run: |
@@ -87,23 +77,29 @@ jobs:
           off_max  = off.get("max_dia") or ""
 
           publish = bool(test_max and (test_max > off_max))
+
           print("test_max:", test_max)
           print("off_max :", off_max)
           print("publish :", publish)
 
-          # output pro GitHub
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"publish={'true' if publish else 'false'}\n")
               f.write(f"test_max={test_max}\n")
               f.write(f"off_max={off_max}\n")
           PY
 
+      # -------------------------------
+      # Publica se necessário
+      # -------------------------------
       - name: Publish TEST -> OFFICIAL (if needed)
         if: steps.decide.outputs.publish == 'true'
         run: |
           cp dashboard/data/pld_monthly_avg_test.json dashboard/data/pld_monthly_avg.json
           cp dashboard/data/pld_meta_test.json dashboard/data/pld_meta.json
 
+      # -------------------------------
+      # Commit e push
+      # -------------------------------
       - name: Commit and push (if changed)
         if: steps.decide.outputs.publish == 'true'
         run: |
