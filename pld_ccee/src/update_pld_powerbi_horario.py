@@ -110,6 +110,45 @@ def get_models_and_exploration(session: requests.Session, cluster_api: str, reso
     r.raise_for_status()
     return r.json()
 
+def get_model_id(session: requests.Session, cluster: str, resource_key: str) -> str:
+    """
+    Alguns reports públicos retornam 403 em modelsAndExploration.
+    Então tentamos modelsAndExploration e, se falhar, usamos reportEmbedConfig.
+    """
+
+    headers = merge_headers(
+        BASE_HEADERS,
+        {
+            "X-PowerBI-ResourceKey": resource_key,
+            "Origin": "https://app.powerbi.com",
+            "Referer": POWERBI_VIEW_URL,
+        },
+    )
+
+    # 1) tenta modelsAndExploration
+    url1 = f"{cluster}/public/reports/modelsAndExploration"
+    r1 = session.get(url1, params={"preferReadOnlySession": "true"}, headers=headers, timeout=60)
+
+    if r1.status_code == 200:
+        j1 = r1.json()
+        model_id = (j1.get("models") or [{}])[0].get("id")
+        if model_id:
+            return model_id
+
+    print("modelsAndExploration status:", r1.status_code)
+
+    # 2) fallback: reportEmbedConfig
+    url2 = f"{cluster}/public/reports/reportEmbedConfig"
+    r2 = session.get(url2, headers=headers, timeout=60)
+    r2.raise_for_status()
+    j2 = r2.json()
+
+    model_id = (j2.get("models") or [{}])[0].get("id")
+    if not model_id:
+        raise RuntimeError(f"Não achei modelId no reportEmbedConfig. keys={list(j2.keys())}")
+
+    return model_id
+
 def get_conceptual_schema(session: requests.Session, cluster_api: str, resource_key: str, model_id: str) -> Dict[str, Any]:
     url = f"{cluster_api}/public/reports/conceptualschema"
     r = session.get(
