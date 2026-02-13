@@ -67,22 +67,30 @@ def extract_cluster_from_html(html: str) -> Optional[str]:
 
 def normalize_cluster_to_api(cluster: str) -> str:
     """
-    Converte:
-      https://wabi-...-primary-redirect.analysis.windows.net
-    para:
-      https://wabi-...-api.analysis.windows.net
+    Converte qualquer host wabi-* para o host API correto.
+
+    Ex:
+      https://wabi-brazil-south-b-primary-redirect.analysis.windows.net
+    vira:
+      https://wabi-brazil-south-b-api.analysis.windows.net
     """
-    # se já for api, ok
-    if "-api.analysis.windows.net" in cluster:
-        return cluster
+    m = re.match(r"^https://(wabi-[a-z0-9\-]+)\.analysis\.windows\.net$", cluster, flags=re.I)
+    if not m:
+        # se vier algo inesperado, tenta um fallback simples
+        return cluster.replace("-primary-redirect.analysis.windows.net", "-api.analysis.windows.net")
 
-    # transforma wabi-<x>-primary-redirect.analysis.windows.net => wabi-<x>-api.analysis.windows.net
-    m = re.match(r"^(https://wabi-[a-z0-9\-]+)(?:-primary-redirect)?\.analysis\.windows\.net$", cluster, flags=re.I)
-    if m:
-        return f"{m.group(1)}-api.analysis.windows.net"
+    host = m.group(1)
 
-    # fallback conservador
-    return cluster.replace("-primary-redirect.analysis.windows.net", "-api.analysis.windows.net")
+    # remove sufixo de redirect, se existir
+    if host.endswith("-primary-redirect"):
+        host = host[: -len("-primary-redirect")]
+
+    # garante sufixo -api
+    if not host.endswith("-api"):
+        host = host + "-api"
+
+    return f"https://{host}.analysis.windows.net"
+
 
 def get_models_and_exploration(session: requests.Session, cluster_api: str, resource_key: str) -> Dict[str, Any]:
     url = f"{cluster_api}/public/reports/modelsAndExploration"
