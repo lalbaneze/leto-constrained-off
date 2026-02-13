@@ -1,4 +1,3 @@
-import base64
 import json
 import os
 import re
@@ -15,107 +14,6 @@ if not POWERBI_VIEW_URL:
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "data", "pld_ccee.sqlite")
-
-
-def _b64url_decode(s: str) -> bytes:
-    s = s.strip()
-    s += "=" * (-len(s) % 4)
-    return base64.urlsafe_b64decode(s.encode("utf-8"))
-
-
-def resource_key_from_r_token(view_url: str) -> str:
-    m = re.search(r"[?&]r=([^&]+)", view_url)
-    if not m:
-        raise RuntimeError("Não achei parâmetro r= na URL do Power BI.")
-    raw = _b64url_decode(m.group(1))
-    payload = json.loads(raw.decode("utf-8"))
-    k = str(payload.get("k") or "").strip()
-    if len(k) < 4:
-        raise RuntimeError(f"Não consegui extrair 'k' do r-token. Payload={payload}")
-    return k[:4].lower()
-
-
-def extract_cluster_from_html(html: str) -> str:
-    # Mantemos o primary-redirect (resolve DNS). Não forçamos -api.
-    cands = re.findall(r"https://wabi-[a-z0-9\-]+(?:-primary-redirect)?\.analysis\.windows\.net", html, flags=re.I)
-    if not cands:
-        raise RuntimeError("Não achei cluster wabi-...analysis.windows.net no HTML.")
-    return cands[0]
-
-
-def list_tables(schema: Dict[str, Any]) -> List[Tuple[str, List[str]]]:
-    entities = schema.get("schema", {}).get("entities") or schema.get("entities") or []
-    out: List[Tuple[str, List[str]]] = []
-    for e in entities:
-        tname = e.get("name") or ""
-        cols = []
-        for p in e.get("properties", []) or []:
-            cname = p.get("name")
-            if cname:
-                cols.append(cname)
-        if tname:
-            out.append((tname, cols))
-    return out
-
-
-def find_pld_horario_table(tables: List[Tuple[str, List[str]]]) -> Tuple[str, Dict[str, str]]:
-    def norm(x: str) -> str:
-        return re.sub(r"[^a-z0-9_]", "", x.lower())
-
-    best = None
-    for tname, cols in tables:
-        nmap = {norm(c): c for c in cols}
-
-        col_date = next((nmap[k] for k in nmap if k in ("dia", "data", "dt", "date")), None)
-        col_hour = next((nmap[k] for k in nmap if k in ("hora", "hr", "hour", "horainicio", "hora_inicio")), None)
-        col_sub  = next((nmap[k] for k in nmap if "submerc" in k or k in ("sbm", "submercado")), None)
-        col_val  = next((nmap[k] for k in nmap if "pld" in k or "preco" in k or "valor" in k or "price" in k), None)
-
-        score = 0
-        score += 2 if col_date else 0
-        score += 3 if col_hour else 0
-        score += 2 if col_sub else 0
-        score += 3 if col_val else 0
-        tn = norm(tname)
-        if "pld" in tn:
-            score += 1
-        if "hora" in tn or "horario" in tn:
-            score += 1
-
-        if col_date and col_hour and col_sub and col_val:
-            if best is None or score > best[0]:
-                best = (score, tname, {"date": col_date, "hour": col_hour, "sub": col_sub, "val": col_val})
-
-    if best is None:
-        raise RuntimeError("Não achei tabela com (data, hora, submercado, valor).")
-    return best[1], best[2]
-
-
-def parse_querydata_rows(resp_json: Dict[str, Any], out_cols: List[str]) -> pd.DataFrame:
-    results = resp_json.get("results") or resp_json.get("Results") or []
-    if not results:
-        raise RuntimeError("querydata sem results.")
-    data = None
-    for item in results:
-        data = (item.get("result") or item.get("Result") or {}).get("data")
-        if data:
-            break
-    if not data:
-        raise RuntimeError("querydata sem data.")
-
-    dsr = data.get("dsr") or data.get("DSR") or {}
-    ds_list = dsr.get("DS") or []
-    if not ds_list:
-        raise RuntimeError("querydata sem dsr.DS.")
-    ph = ds_list[0].get("PH") or []
-    if not ph:
-        raise RuntimeError("querydata sem PH.")
-    dm0 = ph[0].get("DM0")
-    if dm0 is None:
-        raise RuntimeError("querydata sem DM0.")
-
-    rows = [row.get("C") or [] for row in dm0]
-    return pd.DataFrame(rows, columns=out_cols)
 
 
 def ensure_tables(con: sqlite3.Connection) -> None:
@@ -143,6 +41,9 @@ def ensure_tables(con: sqlite3.Connection) -> None:
 
 
 def write_sqlite(df: pd.DataFrame) -> None:
+    if df.empty:
+        raise RuntimeError("0 linhas no dataframe final — nada para gravar.")
+
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     ensure_tables(con)
@@ -162,6 +63,7 @@ def write_sqlite(df: pd.DataFrame) -> None:
         FROM pld_horario
         GROUP BY DIA, HORA
     """)
+
     con.commit()
 
     n_h = cur.execute("SELECT COUNT(*) FROM pld_horario").fetchone()[0]
@@ -176,121 +78,122 @@ def write_sqlite(df: pd.DataFrame) -> None:
     print("DB range   :", min_db, "→", max_db)
 
 
-def main() -> None:
-    rk = resource_key_from_r_token(POWERBI_VIEW_URL)
-    print("resource_key:", rk)
+def parse_querydata(resp_json: Dict[str, Any]) -> pd.DataFrame:
+    results = resp_json.get("results") or resp_json.get("Results") or []
+    if not results:
+        raise RuntimeError("querydata sem results")
 
-    year = date.today().year
-    y0 = year - 1
+    data = None
+    for item in results:
+        data = (item.get("result") or item.get("Result") or {}).get("data")
+        if data:
+            break
+    if not data:
+        raise RuntimeError("querydata sem data")
+
+    dsr = data.get("dsr") or data.get("DSR") or {}
+    ds_list = dsr.get("DS") or []
+    if not ds_list:
+        raise RuntimeError("querydata sem dsr.DS")
+
+    ph = ds_list[0].get("PH") or []
+    if not ph:
+        raise RuntimeError("querydata sem PH")
+
+    dm0 = ph[0].get("DM0")
+    if dm0 is None:
+        raise RuntimeError("querydata sem DM0")
+
+    # DM0 vem como lista de linhas, cada linha tem "C": [col0, col1, ...]
+    rows = [r.get("C") or [] for r in dm0]
+
+    # tentamos inferir colunas pelo formato típico:
+    # DIA, HORA, SUBMERCADO, PLD
+    # mas às vezes vem com mais colunas. vamos cortar para 4 primeiras.
+    rows4 = [r[:4] for r in rows if len(r) >= 4]
+    df = pd.DataFrame(rows4, columns=["DIA", "HORA", "SUBMERCADO", "PLD_HORA"])
+    return df
+
+
+def clean_df(df: pd.DataFrame) -> pd.DataFrame:
+    df["DIA"] = df["DIA"].astype(str).str.slice(0, 10)
+    df["HORA"] = pd.to_numeric(df["HORA"], errors="coerce").fillna(0).astype(int)
+    df["PLD_HORA"] = pd.to_numeric(df["PLD_HORA"], errors="coerce")
+    df["SUBMERCADO"] = df["SUBMERCADO"].astype(str).str.strip().str.lower()
+    df = df.dropna(subset=["DIA", "HORA", "PLD_HORA"])
+
+    # mantém ano atual e anterior
+    y = date.today().year
+    y0 = y - 1
+    df = df[df["DIA"].str.startswith(str(y0)) | df["DIA"].str.startswith(str(y))].copy()
+
+    return df[["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]]
+
+
+def main() -> None:
+    captured: Dict[str, Any] = {"url": None, "headers": None, "postData": None}
+
+    def looks_like_querydata(url: str) -> bool:
+        return "/public/reports/querydata" in url or url.endswith("/querydata") or "querydata" in url
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context()
         page = ctx.new_page()
 
-        # Abre o report (isso setta cookies/sessão)
+        def on_request(req):
+            try:
+                url = req.url
+                if req.method == "POST" and looks_like_querydata(url):
+                    post = req.post_data or ""
+                    if post and "SemanticQueryDataShapeCommand" in post:
+                        # captura a primeira querydata "grande"
+                        if captured["url"] is None:
+                            captured["url"] = url
+                            captured["headers"] = dict(req.headers)
+                            captured["postData"] = post
+            except Exception:
+                pass
+
+        page.on("request", on_request)
+
         page.goto(POWERBI_VIEW_URL, wait_until="networkidle", timeout=120000)
-        html = page.content()
 
-        cluster = extract_cluster_from_html(html)
-        print("cluster:", cluster)
+        # Tenta forçar um refresh/interaction leve para disparar querydata, se ainda não capturou
+        if captured["url"] is None:
+            page.wait_for_timeout(5000)
 
-        headers = {
-            "X-PowerBI-ResourceKey": rk,
-            "Origin": "https://app.powerbi.com",
-            "Referer": POWERBI_VIEW_URL,
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json, text/plain, */*",
-        }
+        if captured["url"] is None:
+            raise RuntimeError("Não consegui capturar nenhuma chamada querydata do Power BI.")
 
-        # Agora chamamos pelos cookies da sessão do browser (ctx.request)
-        # 1) modelsAndExploration
-        url_me = f"{cluster}/public/reports/modelsAndExploration?preferReadOnlySession=true"
-        r_me = ctx.request.get(url_me, headers=headers, timeout=60000)
+        print("Captured querydata URL:", captured["url"])
 
-        if r_me.status != 200:
-            # tenta reportEmbedConfig
-            print("modelsAndExploration status:", r_me.status)
-            url_ec = f"{cluster}/public/reports/reportEmbedConfig"
-            r_ec = ctx.request.get(url_ec, headers=headers, timeout=60000)
-            if r_ec.status != 200:
-                raise RuntimeError(
-                    f"PowerBI bloqueou endpoints mesmo via browser session. "
-                    f"modelsAndExploration={r_me.status}, reportEmbedConfig={r_ec.status}"
-                )
-            j = r_ec.json()
-        else:
-            j = r_me.json()
+        # Reexecuta a mesma querydata pela sessão do browser (ctx.request)
+        # Remove headers problemáticos que o Playwright não gosta / ou que podem conflitar
+        hdr = captured["headers"] or {}
+        # garante accept/json
+        hdr["accept"] = "application/json, text/plain, */*"
 
-        model_id = (j.get("models") or [{}])[0].get("id")
-        if not model_id:
-            raise RuntimeError("Não achei modelId no retorno do Power BI.")
-        print("model_id:", model_id)
+        resp = ctx.request.post(
+            captured["url"],
+            headers=hdr,
+            data=captured["postData"],
+            timeout=180000,
+        )
 
-        # 2) conceptualschema
-        url_schema = f"{cluster}/public/reports/conceptualschema?modelId={model_id}"
-        r_sc = ctx.request.get(url_schema, headers=headers, timeout=60000)
-        if r_sc.status != 200:
-            raise RuntimeError(f"conceptualschema status={r_sc.status}")
-        schema = r_sc.json()
+        print("querydata status:", resp.status)
+        if resp.status != 200:
+            raise RuntimeError(f"querydata falhou: status={resp.status}")
 
-        tables = list_tables(schema)
-        print("tabelas encontradas:", len(tables))
-
-        table, m = find_pld_horario_table(tables)
-        print("tabela escolhida:", table)
-        print("mapeamento:", m)
-
-        # 3) querydata
-        url_qd = f"{cluster}/public/reports/querydata?synchronous=true"
-        selects = [
-            {"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": m["date"]}, "Name": "DIA"},
-            {"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": m["hour"]}, "Name": "HORA"},
-            {"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": m["sub"]},  "Name": "SUBMERCADO"},
-            {"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": m["val"]},  "Name": "PLD_HORA"},
-        ]
-        payload = {
-            "version": "1.0.0",
-            "queries": [{
-                "Query": {
-                    "Commands": [{
-                        "SemanticQueryDataShapeCommand": {
-                            "Query": {
-                                "Version": 2,
-                                "From": [{"Name": "s", "Entity": table}],
-                                "Select": selects,
-                            },
-                            "Binding": {
-                                "Primary": {"Groupings": [{"Projections": list(range(len(selects)))}]},
-                                "DataReduction": {"DataVolume": 3, "Primary": {"Window": {"Count": 250000}}},
-                            }
-                        }
-                    }]
-                }
-            }],
-            "modelId": model_id
-        }
-
-        r_qd = ctx.request.post(url_qd, headers=headers, data=json.dumps(payload), timeout=180000)
-        if r_qd.status != 200:
-            raise RuntimeError(f"querydata status={r_qd.status}")
-
-        df = parse_querydata_rows(r_qd.json(), ["DIA", "HORA", "SUBMERCADO", "PLD_HORA"])
-
-        # normaliza
-        df["DIA"] = df["DIA"].astype(str).str.slice(0, 10)
-        df["HORA"] = pd.to_numeric(df["HORA"], errors="coerce").fillna(0).astype(int)
-        df["PLD_HORA"] = pd.to_numeric(df["PLD_HORA"], errors="coerce")
-        df["SUBMERCADO"] = df["SUBMERCADO"].astype(str).str.strip().str.lower()
-        df = df.dropna(subset=["DIA", "HORA", "PLD_HORA"])
-
-        df = df[df["DIA"].str.startswith(str(y0)) | df["DIA"].str.startswith(str(year))].copy()
-        if df.empty:
-            raise RuntimeError("Power BI retornou 0 linhas após filtro de ano.")
+        j = resp.json()
+        df = parse_querydata(j)
+        df = clean_df(df)
 
         print("linhas retornadas:", len(df))
+        if df.empty:
+            raise RuntimeError("DataFrame vazio após limpeza.")
 
-        write_sqlite(df[["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]].copy())
+        write_sqlite(df)
 
         ctx.close()
         browser.close()
