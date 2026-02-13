@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import sqlite3
@@ -41,6 +40,9 @@ def ensure_tables(con: sqlite3.Connection) -> None:
 
 
 def write_sqlite(df: pd.DataFrame) -> None:
+    if df.empty:
+        raise RuntimeError("0 linhas no dataframe final — nada para gravar.")
+
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     ensure_tables(con)
@@ -75,10 +77,18 @@ def write_sqlite(df: pd.DataFrame) -> None:
     print("DB range   :", min_db, "→", max_db)
 
 
-def extract_dm0(resp_json: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+def looks_like_querydata(url: str) -> bool:
+    return "/public/reports/querydata" in url and "synchronous=true" in url
+
+
+def extract_rows_any_dm(resp_json: Dict[str, Any]) -> List[List[Any]]:
+    """
+    Retorna rows (listas) de qualquer matriz DM* que existir.
+    Em alguns relatórios a matriz pode vir como DM0, DM1, etc.
+    """
     results = resp_json.get("results") or resp_json.get("Results") or []
     if not results:
-        return None
+        return []
 
     data = None
     for item in results:
@@ -86,78 +96,69 @@ def extract_dm0(resp_json: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
         if data:
             break
     if not data:
-        return None
+        return []
 
     dsr = data.get("dsr") or data.get("DSR") or {}
     ds_list = dsr.get("DS") or []
     if not ds_list:
-        return None
+        return []
 
     ph = ds_list[0].get("PH") or []
     if not ph:
-        return None
+        return []
 
-    dm0 = ph[0].get("DM0")
-    if dm0 is None:
-        return None
+    # pega o primeiro PH e procura qualquer chave DM*
+    ph0 = ph[0]
+    dm_keys = [k for k in ph0.keys() if re.match(r"^DM\d+$", str(k))]
+    dm_keys.sort()
 
-    return dm0
+    all_rows: List[List[Any]] = []
+    for k in dm_keys:
+        mat = ph0.get(k)
+        if isinstance(mat, list) and mat:
+            for r in mat:
+                c = r.get("C") if isinstance(r, dict) else None
+                if isinstance(c, list):
+                    all_rows.append(c)
+
+    return all_rows
 
 
-def score_candidate(df: pd.DataFrame) -> int:
+def score_rows_as_pld(rows: List[List[Any]]) -> int:
     """
-    Dá uma nota para um DF "parecer PLD horário":
-      - DIA parseável YYYY-MM-DD
-      - HORA 1..24 (ou 0..23)
-      - SUBMERCADO parece string curta
-      - PLD numérico razoável
+    Dá uma nota para rows parecerem [DIA, HORA, SUBMERCADO, PLD].
+    A gente avalia as 4 primeiras colunas.
     """
-    if df.empty:
+    rows4 = [r[:4] for r in rows if isinstance(r, list) and len(r) >= 4]
+    if not rows4:
         return 0
 
-    score = 0
+    df = pd.DataFrame(rows4, columns=["c0", "c1", "c2", "c3"])
 
-    # DIA
-    dia = df.iloc[:, 0].astype(str).str.slice(0, 10)
+    # DIA (YYYY-MM-DD)
+    dia = df["c0"].astype(str).str.slice(0, 10)
     ok_dia = dia.str.match(r"^\d{4}-\d{2}-\d{2}$", na=False).mean()
-    score += int(ok_dia * 40)
 
-    # HORA
-    hora = pd.to_numeric(df.iloc[:, 1], errors="coerce")
+    # HORA 0..24
+    hora = pd.to_numeric(df["c1"], errors="coerce")
     ok_h = ((hora >= 0) & (hora <= 24)).mean()
-    score += int(ok_h * 30)
 
-    # SUBMERCADO
-    sub = df.iloc[:, 2].astype(str).str.lower()
-    # costuma ter "norte", "nordeste", "sul", "sudeste" ou siglas
-    hits = sub.str.contains("norte|nord|sul|sud|se|co|ne|n\\b|s\\b", regex=True, na=False).mean()
-    score += int(hits * 15)
+    # SUBMERCADO string
+    sub = df["c2"].astype(str).str.lower()
+    hits = sub.str.contains("norte|nord|sul|sud|se/co|sudeste|centro|co", regex=True, na=False).mean()
 
-    # PLD
-    pld = pd.to_numeric(df.iloc[:, 3], errors="coerce")
-    ok_pld = (pld.notna()).mean()
-    score += int(ok_pld * 15)
+    # PLD numérico
+    pld = pd.to_numeric(df["c3"], errors="coerce")
+    ok_pld = pld.notna().mean()
 
+    score = int(ok_dia * 40) + int(ok_h * 30) + int(hits * 15) + int(ok_pld * 15)
     return score
 
 
-def try_build_df_from_dm0(dm0: List[Dict[str, Any]]) -> Optional[pd.DataFrame]:
-    # cada linha tem "C": [col0, col1, ...]
-    rows = [r.get("C") or [] for r in dm0]
-    if not rows:
-        return None
-
-    # precisamos de pelo menos 4 colunas
-    rows4 = [r[:4] for r in rows if len(r) >= 4]
-    if not rows4:
-        return None
-
+def build_clean_df(rows: List[List[Any]]) -> pd.DataFrame:
+    rows4 = [r[:4] for r in rows if isinstance(r, list) and len(r) >= 4]
     df = pd.DataFrame(rows4, columns=["DIA", "HORA", "SUBMERCADO", "PLD_HORA"])
-    return df
 
-
-def clean_pld_df(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
     df["DIA"] = df["DIA"].astype(str).str.slice(0, 10)
     df["HORA"] = pd.to_numeric(df["HORA"], errors="coerce").fillna(-1).astype(int)
     df["PLD_HORA"] = pd.to_numeric(df["PLD_HORA"], errors="coerce")
@@ -166,9 +167,8 @@ def clean_pld_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(subset=["DIA", "PLD_HORA"])
     df = df[df["DIA"].str.match(r"^\d{4}-\d{2}-\d{2}$", na=False)]
     df = df[df["HORA"].between(0, 24)]
-    df = df[df["SUBMERCADO"].str.len().between(1, 30)]
+    df = df[df["SUBMERCADO"].str.len().between(1, 40)]
 
-    # mantém ano atual e anterior
     y = date.today().year
     y0 = y - 1
     df = df[df["DIA"].str.startswith(str(y0)) | df["DIA"].str.startswith(str(y))].copy()
@@ -176,89 +176,74 @@ def clean_pld_df(df: pd.DataFrame) -> pd.DataFrame:
     return df[["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]]
 
 
-def looks_like_querydata(url: str) -> bool:
-    return "querydata" in url and "/public/reports/" in url
-
-
 def main() -> None:
-    captured_requests: List[Dict[str, Any]] = []
+    captured_responses: List[Dict[str, Any]] = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context()
         page = ctx.new_page()
 
-        def on_request(req):
+        def on_response(resp):
             try:
-                if req.method == "POST" and looks_like_querydata(req.url):
-                    post = req.post_data or ""
-                    # só guarda requests "reais" (com SemanticQuery)
-                    if post and "SemanticQueryDataShapeCommand" in post:
-                        captured_requests.append({
-                            "url": req.url,
-                            "headers": dict(req.headers),
-                            "postData": post,
+                if resp.request.method == "POST" and looks_like_querydata(resp.url):
+                    if resp.status == 200:
+                        # tenta ler JSON; se falhar, ignora
+                        j = resp.json()
+                        captured_responses.append({
+                            "url": resp.url,
+                            "json": j
                         })
             except Exception:
                 pass
 
-        page.on("request", on_request)
+        page.on("response", on_response)
 
-        page.goto(POWERBI_VIEW_URL, wait_until="networkidle", timeout=120000)
+        page.goto(POWERBI_VIEW_URL, wait_until="domcontentloaded", timeout=120000)
+        page.wait_for_timeout(4000)
 
-        # dá um tempinho pra capturar mais chamadas
-        page.wait_for_timeout(8000)
+        # força carregar o visual do "histórico do preço horário"
+        # (se já estiver selecionado, não tem problema)
+        try:
+            page.locator("text=histórico do preço horário").first.click(timeout=5000)
+        except Exception:
+            pass
 
-        if not captured_requests:
-            raise RuntimeError("Não capturei nenhuma chamada querydata do Power BI.")
+        # dá tempo para Power BI disparar querydata
+        page.wait_for_timeout(12000)
 
-        print("Captured querydata requests:", len(captured_requests))
-
-        # vamos testar as primeiras N chamadas (pra não ficar lento)
-        N = min(len(captured_requests), 40)
+        print("Captured querydata responses:", len(captured_responses))
+        if not captured_responses:
+            raise RuntimeError("Não capturei respostas querydata (status 200).")
 
         best_score = -1
-        best_df: Optional[pd.DataFrame] = None
-        best_i = None
+        best_rows: Optional[List[List[Any]]] = None
+        best_idx = None
 
-        for i in range(N):
-            item = captured_requests[i]
-            hdr = item["headers"]
-            hdr["accept"] = "application/json, text/plain, */*"
-
-            resp = ctx.request.post(item["url"], headers=hdr, data=item["postData"], timeout=180000)
-            if resp.status != 200:
-                continue
-
-            j = resp.json()
-            dm0 = extract_dm0(j)
-            if dm0 is None:
-                continue
-
-            df0 = try_build_df_from_dm0(dm0)
-            if df0 is None:
-                continue
-
-            sc = score_candidate(df0)
+        for i, item in enumerate(captured_responses):
+            rows = extract_rows_any_dm(item["json"])
+            sc = score_rows_as_pld(rows)
             if sc > best_score:
                 best_score = sc
-                best_i = i
-                best_df = df0
+                best_rows = rows
+                best_idx = i
 
-        if best_df is None or best_score < 50:
+        print("best_score:", best_score, "| best_idx:", best_idx)
+        if best_rows is None or best_score < 50:
+            # debug leve: mostra as chaves do primeiro json capturado
+            keys = list((captured_responses[0]["json"] or {}).keys())
             raise RuntimeError(
-                f"Não consegui identificar qual querydata contém PLD horário. best_score={best_score}"
+                f"Não identifiquei PLD horário em nenhuma resposta querydata. "
+                f"best_score={best_score}. top-level keys (primeiro json)={keys}"
             )
 
-        print(f"Best querydata index: {best_i} | best_score: {best_score}")
-
-        df = clean_pld_df(best_df)
+        df = build_clean_df(best_rows)
         print("linhas após limpeza:", len(df))
         if df.empty:
-            # se ficou vazio, imprime amostra para debug (primeiras linhas cruas)
-            print("Amostra crua (head):")
-            print(best_df.head(5).to_string(index=False))
-            raise RuntimeError("DataFrame vazio após limpeza (mesmo no melhor candidato).")
+            # debug: mostra amostra crua
+            sample = [r[:6] for r in (best_rows[:5] if best_rows else [])]
+            print("Amostra crua (primeiras 5 linhas):", sample)
+            raise RuntimeError("DataFrame vazio após limpeza, mesmo no melhor candidato.")
 
         write_sqlite(df)
 
