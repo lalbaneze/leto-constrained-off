@@ -25,6 +25,41 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+jobs:
+  update-pld:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 👇 COLE ESSE STEP AQUI
+      - name: Test PowerBI link (Painel de Preços)
+        run: |
+          python - <<'PY'
+          import requests
+
+          url = "https://app.powerbi.com/view?r=eyJrIjoiNjk2NzUyNmEtNGZkMy00NDZhLWI4ZjgtMzEyMzhiMDA4NGRkIiwidCI6ImQ3YzNlNTA2LWVmODUtNDM4Ni04ZTU0LTJkZmNkYzgwMTdkMCJ9"
+          r = requests.get(url, timeout=30)
+          print("status:", r.status_code)
+          print("content-type:", r.headers.get("content-type"))
+          print("len:", len(r.text))
+          PY
+
+      # 👇 SEU STEP ORIGINAL CONTINUA IGUAL
+      - name: Update PLD DB (CCEE)
+        run: |
+          python pld_ccee/src/update_pld_2025.py
+
       - name: Update PLD DB (CCEE)
         run: |
           python pld_ccee/src/update_pld_2025.py
