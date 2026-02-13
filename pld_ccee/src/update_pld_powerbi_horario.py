@@ -55,15 +55,15 @@ def get_view_html(session: requests.Session, url: str) -> str:
     return r.text
 
 def extract_cluster_from_html(html: str) -> Optional[str]:
-    # pega qualquer wabi-...analysis.windows.net
+    # Preferir host -api se existir no HTML
+    api = re.findall(r"https://wabi-[a-z0-9\-]+-api\.analysis\.windows\.net", html, flags=re.I)
+    if api:
+        return api[0]
+
+    # Senão pega o redirect mesmo (a normalização vai corrigir)
     cands = re.findall(r"https://wabi-[a-z0-9\-]+(?:-primary-redirect)?\.analysis\.windows\.net", html, flags=re.I)
-    if not cands:
-        # tenta encontrar o host api explicitamente
-        cands2 = re.findall(r"https://wabi-[a-z0-9\-]+-api\.analysis\.windows\.net", html, flags=re.I)
-        if not cands2:
-            return None
-        return cands2[0]
-    return cands[0]
+    return cands[0] if cands else None
+
 
 def normalize_cluster_to_api(cluster: str) -> str:
     """
