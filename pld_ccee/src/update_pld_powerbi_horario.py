@@ -336,13 +336,11 @@ def main() -> None:
     print("resource_key:", resource_key)
 
     html = get_view_html(session, POWERBI_VIEW_URL)
-    cluster_raw = extract_cluster_from_html(html)
-    if not cluster_raw:
+    cluster = extract_cluster_from_html(html)
+    if not cluster:
         raise RuntimeError("Não consegui descobrir o cluster no HTML do report.")
-    print("cluster_raw:", cluster_raw)
+    print("cluster:", cluster)
 
-    cluster = normalize_cluster_to_api(cluster_raw)
-    print("cluster_api:", cluster)
 
     me = get_models_and_exploration(session, cluster, resource_key)
     model_id = (me.get("models") or [{}])[0].get("id")
