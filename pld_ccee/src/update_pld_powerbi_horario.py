@@ -17,7 +17,7 @@ POWERBI_VIEW_URL = os.environ.get(
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "data", "pld_ccee.sqlite")
 
-DEFAULT_HEADERS = {
+BASE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -25,21 +25,17 @@ DEFAULT_HEADERS = {
     ),
     "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
     "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-    "Referer": "https://www.ccee.org.br/",
 }
-
 
 def merge_headers(base: Dict[str, str], extra: Dict[str, str]) -> Dict[str, str]:
     h = dict(base)
     h.update(extra)
     return h
 
-
 def _b64url_decode(s: str) -> bytes:
     s = s.strip()
     s += "=" * (-len(s) % 4)
     return base64.urlsafe_b64decode(s.encode("utf-8"))
-
 
 def resource_key_from_r_token(view_url: str) -> str:
     m = re.search(r"[?&]r=([^&]+)", view_url)
@@ -50,50 +46,79 @@ def resource_key_from_r_token(view_url: str) -> str:
     k = str(payload.get("k") or "").strip()
     if len(k) < 4:
         raise RuntimeError(f"Não consegui extrair 'k' do r-token. Payload={payload}")
+    # padrão que você já vinha usando
     return k[:4].lower()
-
 
 def get_view_html(session: requests.Session, url: str) -> str:
     r = session.get(url, timeout=60)
     r.raise_for_status()
     return r.text
 
-
 def extract_cluster_from_html(html: str) -> Optional[str]:
-    # Preferir endpoint API
-    cands = re.findall(r"https://wabi-[a-z0-9\-]+-api\.analysis\.windows\.net", html, flags=re.I)
-    if cands:
-        return cands[0]
-    # fallback
-    cands2 = re.findall(r"https://wabi-[a-z0-9\-]+\.analysis\.windows\.net", html, flags=re.I)
-    if cands2:
+    # pega qualquer wabi-...analysis.windows.net
+    cands = re.findall(r"https://wabi-[a-z0-9\-]+(?:-primary-redirect)?\.analysis\.windows\.net", html, flags=re.I)
+    if not cands:
+        # tenta encontrar o host api explicitamente
+        cands2 = re.findall(r"https://wabi-[a-z0-9\-]+-api\.analysis\.windows\.net", html, flags=re.I)
+        if not cands2:
+            return None
         return cands2[0]
-    return None
+    return cands[0]
 
+def normalize_cluster_to_api(cluster: str) -> str:
+    """
+    Converte:
+      https://wabi-...-primary-redirect.analysis.windows.net
+    para:
+      https://wabi-...-api.analysis.windows.net
+    """
+    # se já for api, ok
+    if "-api.analysis.windows.net" in cluster:
+        return cluster
 
-def get_models_and_exploration(session: requests.Session, cluster: str, resource_key: str) -> Dict[str, Any]:
-    url = f"{cluster}/public/reports/modelsAndExploration"
+    # transforma wabi-<x>-primary-redirect.analysis.windows.net => wabi-<x>-api.analysis.windows.net
+    m = re.match(r"^(https://wabi-[a-z0-9\-]+)(?:-primary-redirect)?\.analysis\.windows\.net$", cluster, flags=re.I)
+    if m:
+        return f"{m.group(1)}-api.analysis.windows.net"
+
+    # fallback conservador
+    return cluster.replace("-primary-redirect.analysis.windows.net", "-api.analysis.windows.net")
+
+def get_models_and_exploration(session: requests.Session, cluster_api: str, resource_key: str) -> Dict[str, Any]:
+    url = f"{cluster_api}/public/reports/modelsAndExploration"
     r = session.get(
         url,
         params={"preferReadOnlySession": "true"},
-        headers=merge_headers(DEFAULT_HEADERS, {"X-PowerBI-ResourceKey": resource_key}),
+        headers=merge_headers(
+            BASE_HEADERS,
+            {
+                "X-PowerBI-ResourceKey": resource_key,
+                "Origin": "https://app.powerbi.com",
+                "Referer": POWERBI_VIEW_URL,
+            },
+        ),
         timeout=60,
     )
     r.raise_for_status()
     return r.json()
 
-
-def get_conceptual_schema(session: requests.Session, cluster: str, resource_key: str, model_id: str) -> Dict[str, Any]:
-    url = f"{cluster}/public/reports/conceptualschema"
+def get_conceptual_schema(session: requests.Session, cluster_api: str, resource_key: str, model_id: str) -> Dict[str, Any]:
+    url = f"{cluster_api}/public/reports/conceptualschema"
     r = session.get(
         url,
         params={"modelId": model_id},
-        headers=merge_headers(DEFAULT_HEADERS, {"X-PowerBI-ResourceKey": resource_key}),
+        headers=merge_headers(
+            BASE_HEADERS,
+            {
+                "X-PowerBI-ResourceKey": resource_key,
+                "Origin": "https://app.powerbi.com",
+                "Referer": POWERBI_VIEW_URL,
+            },
+        ),
         timeout=60,
     )
     r.raise_for_status()
     return r.json()
-
 
 def list_tables(schema: Dict[str, Any]) -> List[Tuple[str, List[str]]]:
     entities = schema.get("schema", {}).get("entities") or schema.get("entities") or []
@@ -109,15 +134,7 @@ def list_tables(schema: Dict[str, Any]) -> List[Tuple[str, List[str]]]:
             out.append((tname, cols))
     return out
 
-
 def find_pld_horario_table(tables: List[Tuple[str, List[str]]]) -> Tuple[str, Dict[str, str]]:
-    """
-    Queremos explicitamente uma tabela que tenha:
-      - data/dia
-      - hora
-      - submercado
-      - pld/preço/valor
-    """
     def norm(x: str) -> str:
         return re.sub(r"[^a-z0-9_]", "", x.lower())
 
@@ -125,7 +142,6 @@ def find_pld_horario_table(tables: List[Tuple[str, List[str]]]) -> Tuple[str, Di
     for tname, cols in tables:
         nmap = {norm(c): c for c in cols}
 
-        # candidatos
         col_date = next((nmap[k] for k in nmap if k in ("dia", "data", "dt", "date")), None)
         col_hour = next((nmap[k] for k in nmap if k in ("hora", "hr", "hour", "horainicio", "hora_inicio")), None)
         col_sub  = next((nmap[k] for k in nmap if "submerc" in k or k in ("sbm", "submercado")), None)
@@ -137,7 +153,6 @@ def find_pld_horario_table(tables: List[Tuple[str, List[str]]]) -> Tuple[str, Di
         score += 2 if col_sub else 0
         score += 3 if col_val else 0
 
-        # bônus se o nome da tabela sugere pld/horário
         tn = norm(tname)
         if "pld" in tn:
             score += 1
@@ -149,38 +164,26 @@ def find_pld_horario_table(tables: List[Tuple[str, List[str]]]) -> Tuple[str, Di
                 best = (score, tname, {"date": col_date, "hour": col_hour, "sub": col_sub, "val": col_val})
 
     if best is None:
-        # se não achar com submercado, tenta sem submercado (último recurso)
-        for tname, cols in tables:
-            nmap = {norm(c): c for c in cols}
-            col_date = next((nmap[k] for k in nmap if k in ("dia", "data", "dt", "date")), None)
-            col_hour = next((nmap[k] for k in nmap if k in ("hora", "hr", "hour", "horainicio", "hora_inicio")), None)
-            col_val  = next((nmap[k] for k in nmap if "pld" in k or "preco" in k or "valor" in k or "price" in k), None)
-            if col_date and col_hour and col_val:
-                return tname, {"date": col_date, "hour": col_hour, "sub": "", "val": col_val}
-
-        raise RuntimeError("Não achei tabela com (data, hora, valor).")
+        raise RuntimeError("Não achei tabela com (data, hora, submercado, valor).")
 
     return best[1], best[2]
 
-
-def query_table(session: requests.Session, cluster: str, resource_key: str, model_id: str,
+def query_table(session: requests.Session, cluster_api: str, resource_key: str, model_id: str,
                 table: str, m: Dict[str, str], year: int) -> pd.DataFrame:
-    url = f"{cluster}/public/reports/querydata?synchronous=true"
+    url = f"{cluster_api}/public/reports/querydata?synchronous=true"
 
     col_date = m["date"]
     col_hour = m["hour"]
-    col_sub  = m.get("sub") or ""
+    col_sub  = m["sub"]
     col_val  = m["val"]
 
     selects = [
         {"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": col_date}, "Name": "DIA"},
         {"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": col_hour}, "Name": "HORA"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": col_sub},  "Name": "SUBMERCADO"},
+        {"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": col_val},  "Name": "PLD_HORA"},
     ]
-    if col_sub:
-        selects.append({"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": col_sub}, "Name": "SUBMERCADO"})
-    selects.append({"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": col_val}, "Name": "PLD_HORA"})
 
-    # janela grande para trazer histórico recente; filtramos depois
     payload = {
         "version": "1.0.0",
         "queries": [{
@@ -205,7 +208,14 @@ def query_table(session: requests.Session, cluster: str, resource_key: str, mode
 
     r = session.post(
         url,
-        headers=merge_headers(DEFAULT_HEADERS, {"X-PowerBI-ResourceKey": resource_key}),
+        headers=merge_headers(
+            BASE_HEADERS,
+            {
+                "X-PowerBI-ResourceKey": resource_key,
+                "Origin": "https://app.powerbi.com",
+                "Referer": POWERBI_VIEW_URL,
+            },
+        ),
         json=payload,
         timeout=180,
     )
@@ -235,26 +245,19 @@ def query_table(session: requests.Session, cluster: str, resource_key: str, mode
     if dm0 is None:
         raise RuntimeError("Não achei PH[0].DM0 no retorno do Power BI.")
 
-    rows = []
-    for row in dm0:
-        rows.append(row.get("C") or [])
+    rows = [row.get("C") or [] for row in dm0]
+    df = pd.DataFrame(rows, columns=["DIA", "HORA", "SUBMERCADO", "PLD_HORA"])
 
-    out_cols = ["DIA", "HORA"] + (["SUBMERCADO"] if col_sub else []) + ["PLD_HORA"]
-    df = pd.DataFrame(rows, columns=out_cols)
-
-    # normalização
     df["DIA"] = df["DIA"].astype(str).str.slice(0, 10)
     df["HORA"] = pd.to_numeric(df["HORA"], errors="coerce").fillna(0).astype(int)
     df["PLD_HORA"] = pd.to_numeric(df["PLD_HORA"], errors="coerce")
-    if "SUBMERCADO" in df.columns:
-        df["SUBMERCADO"] = df["SUBMERCADO"].astype(str).str.strip().str.lower()
+    df["SUBMERCADO"] = df["SUBMERCADO"].astype(str).str.strip().str.lower()
 
     df = df.dropna(subset=["DIA", "HORA", "PLD_HORA"])
 
     y0 = year - 1
     df = df[df["DIA"].str.startswith(str(y0)) | df["DIA"].str.startswith(str(year))].copy()
     return df
-
 
 def ensure_tables(con: sqlite3.Connection) -> None:
     cur = con.cursor()
@@ -278,7 +281,6 @@ def ensure_tables(con: sqlite3.Connection) -> None:
         ON pld_horario (DIA, HORA, SUBMERCADO)
     """)
     con.commit()
-
 
 def write_sqlite(df: pd.DataFrame) -> None:
     if df.empty:
@@ -305,7 +307,6 @@ def write_sqlite(df: pd.DataFrame) -> None:
     """)
 
     con.commit()
-
     n_h = cur.execute("SELECT COUNT(*) FROM pld_horario").fetchone()[0]
     n_m = cur.execute("SELECT COUNT(*) FROM pld_medio").fetchone()[0]
     min_db = cur.execute("SELECT MIN(DIA) FROM pld_medio").fetchone()[0]
@@ -317,10 +318,9 @@ def write_sqlite(df: pd.DataFrame) -> None:
     print("pld_medio  :", n_m, "linhas")
     print("DB range   :", min_db, "→", max_db)
 
-
 def main() -> None:
     session = requests.Session()
-    session.headers.update(DEFAULT_HEADERS)
+    session.headers.update(BASE_HEADERS)
 
     year = date.today().year
 
@@ -328,10 +328,13 @@ def main() -> None:
     print("resource_key:", resource_key)
 
     html = get_view_html(session, POWERBI_VIEW_URL)
-    cluster = extract_cluster_from_html(html)
-    if not cluster:
+    cluster_raw = extract_cluster_from_html(html)
+    if not cluster_raw:
         raise RuntimeError("Não consegui descobrir o cluster no HTML do report.")
-    print("cluster:", cluster)
+    print("cluster_raw:", cluster_raw)
+
+    cluster = normalize_cluster_to_api(cluster_raw)
+    print("cluster_api:", cluster)
 
     me = get_models_and_exploration(session, cluster, resource_key)
     model_id = (me.get("models") or [{}])[0].get("id")
@@ -350,13 +353,8 @@ def main() -> None:
     df = query_table(session, cluster, resource_key, model_id, table, mapping, year)
     print("linhas retornadas:", len(df))
 
-    # garante schema esperado no sqlite
-    if "SUBMERCADO" not in df.columns:
-        df["SUBMERCADO"] = "media"
-
     df = df[["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]].copy()
     write_sqlite(df)
-
 
 if __name__ == "__main__":
     main()
