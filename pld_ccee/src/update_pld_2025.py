@@ -5,8 +5,8 @@ import os
 import sqlite3
 from datetime import date
 
-import requests
 import pandas as pd
+import cloudscraper
 
 CKAN_BASE = "https://dadosabertos.ccee.org.br"
 DATASET = "pld_horario"
@@ -15,10 +15,21 @@ DATASET = "pld_horario"
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "data", "pld_ccee.sqlite")
 
-# Header p/ evitar 403 (WAF/Cloudflare bloqueando user-agent padrão do requests)
+# Headers para reduzir chance de 403 (WAF/Cloudflare)
 DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; jgp-dashboard/1.0)"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    "Referer": "https://dadosabertos.ccee.org.br/",
+    "Connection": "keep-alive",
 }
+
+# Scraper que lida melhor com proteções/clearance cookies
+SCRAPER = cloudscraper.create_scraper()
 
 
 # ------------------------------------------------------------
@@ -34,15 +45,15 @@ def resource_names_to_update():
 # ------------------------------------------------------------
 def get_resource_url(resource_name: str) -> str:
     url = f"{CKAN_BASE}/api/3/action/package_show"
-    r = requests.get(
+    r = SCRAPER.get(
         url,
         params={"id": DATASET},
         headers=DEFAULT_HEADERS,
-        timeout=60
+        timeout=60,
     )
     r.raise_for_status()
-    pkg = r.json()["result"]
 
+    pkg = r.json()["result"]
     for res in pkg.get("resources", []):
         name = (res.get("name") or "").strip()
         if name.lower() == resource_name.lower():
@@ -91,10 +102,10 @@ def ensure_tables(con: sqlite3.Connection) -> None:
 def load_csv_to_sqlite(csv_url: str) -> None:
     print("Baixando CSV:", csv_url)
 
-    resp = requests.get(
+    resp = SCRAPER.get(
         csv_url,
         headers=DEFAULT_HEADERS,
-        timeout=120
+        timeout=120,
     )
     resp.raise_for_status()
 
