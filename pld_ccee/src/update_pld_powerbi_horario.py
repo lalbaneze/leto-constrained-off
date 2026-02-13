@@ -381,11 +381,9 @@ def main() -> None:
     print("cluster:", cluster)
 
 
-    me = get_models_and_exploration(session, cluster, resource_key)
-    model_id = (me.get("models") or [{}])[0].get("id")
-    if not model_id:
-        raise RuntimeError("Não achei modelId em modelsAndExploration.")
+    model_id = get_model_id(session, cluster, resource_key)
     print("model_id:", model_id)
+
 
     schema = get_conceptual_schema(session, cluster, resource_key, model_id)
     tables = list_tables(schema)
