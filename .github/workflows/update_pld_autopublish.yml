@@ -35,6 +35,18 @@ jobs:
           print("content-type:", r.headers.get("content-type"))
           print("len:", len(r.text))
           PY
+          
+      - name: Discover resource_ids (CKAN search)
+        run: |
+          python - <<'PY'
+          import requests
+
+          base = "https://dadosabertos.ccee.org.br/api/3/action"
+          q = "pld_horario_2025 OR pld_horario_2024 OR pld_horario"
+          r = requests.get(f"{base}/package_search", params={"q": q, "rows": 5}, timeout=60)
+          print("status:", r.status_code)
+          print(r.text[:2000])
+          PY
 
       - name: Update PLD DB (CCEE)
         run: |
