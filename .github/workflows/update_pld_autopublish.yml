@@ -30,17 +30,31 @@ jobs:
         run: |
           python pld_ccee/src/update_pld_2025.py
 
-      - name: Debug PLD max_dia from sqlite
-        run: |
-          python - << 'PY'
-          import sqlite3
-          con = sqlite3.connect("pld_ccee/data/pld_ccee.sqlite")
+      - name: Debug PLD sqlite (path + tables)
+      run: |
+        python - << 'PY'
+        import os, sqlite3
+
+        path = "pld_ccee/data/pld_ccee.sqlite"
+        print("PWD:", os.getcwd())
+        print("DB path:", path)
+        print("DB exists?", os.path.exists(path))
+        if os.path.exists(path):
+          print("DB size:", os.path.getsize(path), "bytes")
+
+        con = sqlite3.connect(path)
+        tables = con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+        print("Tables:", [t[0] for t in tables])
+
+        if any(t[0] == "pld_medio" for t in tables):
           r = con.execute("SELECT MIN(DIA), MAX(DIA) FROM pld_medio WHERE length(DIA)=10").fetchone()
-          con.close()
           print("min_dia:", r[0])
           print("max_dia:", r[1])
-          PY
-
+        else:
+          print("⚠️ pld_medio não existe nesse arquivo. Isso indica que o update não gravou nada nesse DB.")
+        con.close()
+        PY
+        
       - name: Export PLD TEST JSON
         run: |
           python export_pld_json_test.py
