@@ -30,6 +30,29 @@ jobs:
         run: |
           python pld_ccee/src/update_pld_2025.py
 
+      - name: Debug DB after update (tables + counts)
+        run: |
+          python - << 'PY'
+          import sqlite3, os
+
+          path = "pld_ccee/data/pld_ccee.sqlite"
+          print("DB exists?", os.path.exists(path))
+          if os.path.exists(path):
+            print("DB size:", os.path.getsize(path), "bytes")
+
+          con = sqlite3.connect(path)
+          tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
+          print("Tables:", tables)
+
+          if "pld_horario" in tables:
+            print("pld_horario rows:", con.execute("SELECT COUNT(*) FROM pld_horario").fetchone()[0])
+          if "pld_medio" in tables:
+            print("pld_medio rows:", con.execute("SELECT COUNT(*) FROM pld_medio").fetchone()[0])
+            print("min/max:", con.execute("SELECT MIN(DIA), MAX(DIA) FROM pld_medio").fetchone())
+          con.close()
+          PY
+   
+
       - name: Debug PLD sqlite (path + tables)
         run: |
           python - << 'PY'
