@@ -196,12 +196,14 @@ def load_csv_to_sqlite(csv_url: str, sess) -> None:
 def main():
     sess = make_session()
 
-    # garante que o DB existe e tem as tabelas, mesmo se o download falhar
+    # garante que o DB existe e tem as tabelas
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     ensure_tables(con)
     con.close()
     print("DB_PATH (update):", DB_PATH)
+
+    updated_any = False
 
     for y in years_to_update():
         print(f"\n=== Atualizando PLD horário ano {y} ===")
@@ -211,7 +213,26 @@ def main():
             print(f"⚠️ Não consegui obter URL do ano {y}: {e}")
             continue
 
+        before = _count_rows(DB_PATH, "pld_horario")
         load_csv_to_sqlite(csv_url, sess)
+        after = _count_rows(DB_PATH, "pld_horario")
+
+        if after > before:
+            updated_any = True
+
+    if not updated_any:
+        raise SystemExit("❌ Nenhum dado novo foi carregado (pld_horario não aumentou). Verifique download/URL.")
+
+
+def _count_rows(db_path: str, table: str) -> int:
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    try:
+        n = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    except Exception:
+        n = 0
+    con.close()
+    return int(n)
 
 
 
