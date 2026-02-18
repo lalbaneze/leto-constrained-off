@@ -24,18 +24,12 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests
+          pip install pandas requests cloudscraper
 
-      # ----------------------------------------------------
-      # Atualiza banco SQLite com PLD horário (CKAN CSV)
-      # ----------------------------------------------------
       - name: Update PLD DB (dados abertos CCEE)
         run: |
           python pld_ccee/src/update_pld_2025.py
 
-      # ----------------------------------------------------
-      # Debug: verificar intervalo de datas no banco
-      # ----------------------------------------------------
       - name: Debug PLD max_dia from sqlite
         run: |
           python - << 'PY'
@@ -47,16 +41,10 @@ jobs:
           print("max_dia:", r[1])
           PY
 
-      # ----------------------------------------------------
-      # Exporta JSON de TESTE
-      # ----------------------------------------------------
       - name: Export PLD TEST JSON
         run: |
           python export_pld_json_test.py
 
-      # ----------------------------------------------------
-      # Decide se publica (só se max_dia avançou)
-      # ----------------------------------------------------
       - name: Decide if publish
         id: decide
         run: |
@@ -76,7 +64,6 @@ jobs:
           off_max  = off.get("max_dia") or ""
 
           publish = bool(test_max and (test_max > off_max))
-
           print("test_max:", test_max)
           print("off_max :", off_max)
           print("publish :", publish)
@@ -87,9 +74,6 @@ jobs:
               f.write(f"off_max={off_max}\n")
           PY
 
-      # ----------------------------------------------------
-      # Publica TEST → OFICIAL se tiver dado novo
-      # ----------------------------------------------------
       - name: Publish TEST -> OFFICIAL (if needed)
         if: steps.decide.outputs.publish == 'true'
         run: |
