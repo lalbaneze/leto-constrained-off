@@ -54,6 +54,10 @@ def main():
     max_dia = rmax["max_dia"] if rmax else None
     con.close()
 
+    # 🔒 trava se não tiver dado
+    if not max_dia:
+        raise SystemExit("❌ max_dia veio None (sem dados em pld_medio). Abortando export.")
+
     with open(OUT_MONTHLY, "w", encoding="utf-8") as f:
         json.dump(monthly, f, ensure_ascii=False, indent=2)
 
@@ -67,6 +71,7 @@ def main():
             ensure_ascii=False,
             indent=2,
         )
+
 
     print("✅ Gerados:")
     print(" -", OUT_MONTHLY)
