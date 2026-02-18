@@ -57,7 +57,7 @@ jobs:
 
       - name: Export PLD TEST JSON
         run: |
-          python export_pld_json_test.py
+          python export_pld_json.py
 
       - name: Decide if publish
         id: decide
