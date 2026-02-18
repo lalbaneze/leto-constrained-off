@@ -2,15 +2,17 @@
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# caminho do DB gerado pelo update_pld_2025.py
 DB_PATH = os.path.join(BASE_DIR, "pld_ccee", "data", "pld_ccee.sqlite")
 
 OUT_DIR = os.path.join(BASE_DIR, "dashboard", "data")
 OUT_MONTHLY = os.path.join(OUT_DIR, "pld_monthly_avg_test.json")
 OUT_META = os.path.join(OUT_DIR, "pld_meta_test.json")
+
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -20,7 +22,15 @@ def main():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
 
-    # média mensal = média das horas no mês (em cima do PLD_MEDIO por hora)
+    # valida existência da tabela para dar erro claro
+    tables = {r["name"] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    if "pld_medio" not in tables:
+        raise SystemExit(
+            f"Tabela 'pld_medio' não existe em {DB_PATH}. Tabelas: {sorted(tables)}"
+        )
+
     rows = con.execute("""
       SELECT substr(DIA,1,7) as ym, AVG(PLD_MEDIO) as pld_medio_mensal
       FROM pld_medio
@@ -40,23 +50,29 @@ def main():
       FROM pld_medio
       WHERE length(DIA)=10
     """).fetchone()
-    max_dia = rmax["max_dia"] if rmax else None
 
+    max_dia = rmax["max_dia"] if rmax else None
     con.close()
 
     with open(OUT_MONTHLY, "w", encoding="utf-8") as f:
         json.dump(monthly, f, ensure_ascii=False, indent=2)
 
     with open(OUT_META, "w", encoding="utf-8") as f:
-        json.dump({
-            "max_dia": max_dia,
-            "updated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        }, f, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "max_dia": max_dia,
+                "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
 
     print("✅ Gerados:")
     print(" -", OUT_MONTHLY)
     print(" -", OUT_META)
     print("PLD max_dia:", max_dia)
+
 
 if __name__ == "__main__":
     main()
