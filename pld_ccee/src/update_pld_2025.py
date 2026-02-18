@@ -17,8 +17,14 @@ UA = (
 
 # ✅ Links diretos (pda-download) – não passam pelo CKAN e não dão 403
 PDA_BY_YEAR = {
-    2025: "https://pda-download.ccee.org.br/korJMXwpSLGyVlpRMQWduA/content",
-    2026: "https://pda-download.ccee.org.br/6A5wq97KTCWv_bvs3CqsQQ/content",
+    2025: {
+        "pda": "https://pda-download.ccee.org.br/korJMXwpSLGyVlpRMQWduA/content",
+        "referer": "https://dadosabertos.ccee.org.br/dataset/pld_horario/resource/2a180a6b-f092-43eb-9f82-a48798b803dc",
+    },
+    2026: {
+        "pda": "https://pda-download.ccee.org.br/6A5wq97KTCWv_bvs3CqsQQ/content",
+        "referer": "https://dadosabertos.ccee.org.br/dataset/pld_horario/resource/3f279d6b-1069-42f7-9b0a-217b084729c4",
+    },
 }
 
 
@@ -66,10 +72,32 @@ def _count_rows(db_path: str, table: str) -> int:
     return int(n)
 
 
-def fetch_csv_text(url: str) -> str:
-    r = requests.get(url, headers={"User-Agent": UA}, timeout=180)
+def make_http_session():
+    # tenta cloudscraper (melhor contra WAF); senão, requests normal
+    try:
+        import cloudscraper  # type: ignore
+        s = cloudscraper.create_scraper()
+    except Exception:
+        s = requests.Session()
+    return s
+
+
+def fetch_csv_text(url: str, referer: str) -> str:
+    s = make_http_session()
+
+    headers = {
+        "User-Agent": UA,
+        "Accept": "text/csv,text/plain,*/*",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": referer,
+        "Origin": "https://dadosabertos.ccee.org.br",
+        "Connection": "keep-alive",
+    }
+
+    r = s.get(url, headers=headers, timeout=180, allow_redirects=True)
     r.raise_for_status()
     return r.text
+
 
 
 def load_csv_text_to_sqlite(csv_text: str) -> None:
@@ -154,23 +182,30 @@ def main():
     updated_any = False
 
     for y in years_to_update():
-        url = PDA_BY_YEAR.get(y)
-        if not url:
+        info = PDA_BY_YEAR.get(y)
+        if not info:
             print(f"⚠️ Sem PDA link configurado para {y}. Pulando.")
             continue
 
+        url = info["pda"]
+        ref = info["referer"]
+
         print(f"\n=== Baixando PLD horário {y} ===")
         before = _count_rows(DB_PATH, "pld_horario")
-        csv_text = fetch_csv_text(url)
-        load_csv_text_to_sqlite(csv_text)
-        after = _count_rows(DB_PATH, "pld_horario")
 
+        csv_text = fetch_csv_text(url, ref)
+        load_csv_text_to_sqlite(csv_text)
+
+        after = _count_rows(DB_PATH, "pld_horario")
         if after > before:
             updated_any = True
 
     if not updated_any:
-        raise SystemExit("❌ Nenhum dado novo foi carregado (pld_horario não aumentou). Verifique download/URL.")
+        raise SystemExit(
+            "❌ Nenhum dado novo foi carregado (pld_horario não aumentou). Verifique download/URL."
+        )
 
 
 if __name__ == "__main__":
     main()
+
