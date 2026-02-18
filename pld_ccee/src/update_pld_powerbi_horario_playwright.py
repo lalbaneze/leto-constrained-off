@@ -1,8 +1,9 @@
 import os
 import re
+import json
 import sqlite3
 from datetime import date
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from playwright.sync_api import sync_playwright
@@ -41,7 +42,7 @@ def ensure_tables(con: sqlite3.Connection) -> None:
 
 def write_sqlite(df: pd.DataFrame) -> None:
     if df.empty:
-        raise RuntimeError("CSV exportado veio vazio após limpeza — nada para gravar.")
+        raise RuntimeError("0 linhas no dataframe final — nada para gravar.")
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH)
@@ -63,12 +64,24 @@ def write_sqlite(df: pd.DataFrame) -> None:
         GROUP BY DIA, HORA
     """)
     con.commit()
+
+    n_h = cur.execute("SELECT COUNT(*) FROM pld_horario").fetchone()[0]
+    n_m = cur.execute("SELECT COUNT(*) FROM pld_medio").fetchone()[0]
+    min_db = cur.execute("SELECT MIN(DIA) FROM pld_medio").fetchone()[0]
+    max_db = cur.execute("SELECT MAX(DIA) FROM pld_medio").fetchone()[0]
     con.close()
 
     print("OK ✅")
+    print("pld_horario:", n_h, "linhas")
+    print("pld_medio  :", n_m, "linhas")
+    print("DB range   :", min_db, "→", max_db)
 
 
-def click_text(scope, texts, timeout=6000) -> bool:
+def looks_like_querydata(url: str) -> bool:
+    return "/public/reports/querydata" in url
+
+
+def click_text(scope, texts, timeout=8000) -> bool:
     for t in texts:
         try:
             scope.locator(f"text={t}").first.click(timeout=timeout)
@@ -78,176 +91,225 @@ def click_text(scope, texts, timeout=6000) -> bool:
     return False
 
 
-def normalize_decimal_series(s: pd.Series) -> pd.Series:
-    raw = s.astype(str).str.strip()
-    mask_pt = raw.str.contains(",", na=False)
-    raw.loc[mask_pt] = raw.loc[mask_pt].str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
-    return pd.to_numeric(raw, errors="coerce")
-
-
-def find_frame_with_text(page, needle: str, timeout_ms: int = 120000):
-    """
-    Espera e retorna o frame que contém o texto 'needle'.
-    """
-    page.wait_for_timeout(3000)
-    deadline = pd.Timestamp.utcnow().value // 10**6 + timeout_ms
-
-    while (pd.Timestamp.utcnow().value // 10**6) < deadline:
+def find_frame_with_any_text(page, texts: List[str], timeout_ms: int = 120000):
+    page.wait_for_timeout(2000)
+    end = pd.Timestamp.now(tz="UTC").value // 10**6 + timeout_ms
+    while (pd.Timestamp.now(tz="UTC").value // 10**6) < end:
         for fr in page.frames:
             try:
                 if fr.is_detached():
                     continue
-                # procura texto dentro do frame
-                if fr.locator(f"text={needle}").count() > 0:
-                    return fr
+                for t in texts:
+                    if fr.locator(f"text={t}").count() > 0:
+                        return fr
             except Exception:
                 continue
         page.wait_for_timeout(1500)
-
     return None
 
 
+def collect_C_rows(obj: Any, out: List[List[Any]]) -> None:
+    if isinstance(obj, dict):
+        if "C" in obj and isinstance(obj["C"], list):
+            out.append(obj["C"])
+        for v in obj.values():
+            collect_C_rows(v, out)
+    elif isinstance(obj, list):
+        for it in obj:
+            collect_C_rows(it, out)
+
+
+def normalize_date(v: Any) -> Optional[str]:
+    s = str(v).strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        return s[:10]
+    try:
+        x = float(v)
+        if 30000 <= x <= 70000:
+            dt = pd.to_datetime(x, unit="D", origin="1899-12-30", errors="coerce")
+            if pd.notna(dt):
+                return dt.strftime("%Y-%m-%d")
+        if 1e12 <= x <= 2e12:
+            dt = pd.to_datetime(x, unit="ms", errors="coerce")
+            if pd.notna(dt):
+                return dt.strftime("%Y-%m-%d")
+        if 1e9 <= x <= 2e9:
+            dt = pd.to_datetime(x, unit="s", errors="coerce")
+            if pd.notna(dt):
+                return dt.strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return None
+
+
+def is_hour(v: Any) -> bool:
+    try:
+        x = int(float(v))
+        return 0 <= x <= 24
+    except Exception:
+        return False
+
+
+def is_submarket(v: Any) -> bool:
+    s = str(v).strip().lower()
+    return bool(re.search(r"(norte|nordeste|sul|sudeste|se/co|seco|centro|oeste|ne\b|se\b|co\b)", s))
+
+
+def infer_columns(rows: List[List[Any]]) -> Optional[Tuple[int, int, int, int]]:
+    rows = [r for r in rows if isinstance(r, list) and len(r) >= 4]
+    if not rows:
+        return None
+
+    max_len = min(max(len(r) for r in rows), 30)
+    stats = []
+    for i in range(max_len):
+        col = [r[i] for r in rows if len(r) > i]
+        if not col:
+            continue
+        dia_rate = sum(1 for v in col if normalize_date(v) is not None) / len(col)
+        hora_rate = sum(1 for v in col if is_hour(v)) / len(col)
+        sub_rate  = sum(1 for v in col if is_submarket(v)) / len(col)
+        num_rate  = pd.to_numeric(pd.Series(col), errors="coerce").notna().mean()
+        stats.append((i, dia_rate, hora_rate, sub_rate, num_rate))
+
+    if not stats:
+        return None
+
+    dia_i  = max(stats, key=lambda t: t[1])[0]
+    hora_i = max(stats, key=lambda t: t[2])[0]
+    sub_i  = max(stats, key=lambda t: t[3])[0]
+    cand = [t for t in stats if t[0] not in {dia_i, hora_i, sub_i}]
+    if not cand:
+        return None
+    pld_i = max(cand, key=lambda t: t[4])[0]
+
+    # mínimos um pouco mais fortes (pra não pegar “cards”)
+    dia_rate  = next(t[1] for t in stats if t[0] == dia_i)
+    hora_rate = next(t[2] for t in stats if t[0] == hora_i)
+    sub_rate  = next(t[3] for t in stats if t[0] == sub_i)
+    if dia_rate < 0.15 or hora_rate < 0.15 or sub_rate < 0.08:
+        return None
+
+    return (dia_i, hora_i, sub_i, pld_i)
+
+
+def build_df(rows: List[List[Any]], idxs: Tuple[int, int, int, int]) -> pd.DataFrame:
+    di, hi, si, pi = idxs
+    out = []
+    for r in rows:
+        if not isinstance(r, list) or len(r) <= max(idxs):
+            continue
+        dia = normalize_date(r[di])
+        if dia is None:
+            continue
+        try:
+            hora = int(float(r[hi]))
+        except Exception:
+            continue
+        sub = str(r[si]).strip().lower()
+        pld = pd.to_numeric(pd.Series([r[pi]]), errors="coerce").iloc[0]
+        if pd.isna(pld):
+            continue
+        out.append((dia, hora, sub, float(pld)))
+
+    df = pd.DataFrame(out, columns=["DIA", "HORA", "SUBMERCADO", "PLD_HORA"])
+    y = date.today().year
+    y0 = y - 1
+    df = df[df["DIA"].str.startswith(str(y0)) | df["DIA"].str.startswith(str(y))].copy()
+    return df
+
+
 def main() -> None:
+    # vamos guardar respostas com (bytes_len, json)
+    captured: List[Tuple[int, Dict[str, Any]]] = []
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(accept_downloads=True)
+        ctx = browser.new_context(
+            viewport={"width": 1600, "height": 1200},
+            device_scale_factor=1,
+        )
         page = ctx.new_page()
+
+        def on_response(resp):
+            try:
+                if resp.request.method == "POST" and looks_like_querydata(resp.url) and resp.status == 200:
+                    # pega tamanho bruto (heurística: a query do dataset é grande)
+                    body = resp.body()
+                    if body:
+                        j = resp.json()
+                        captured.append((len(body), j))
+            except Exception:
+                pass
+
+        page.on("response", on_response)
 
         page.goto(POWERBI_VIEW_URL, wait_until="domcontentloaded", timeout=120000)
 
-        # 🔎 acha o frame do report
-        frame = find_frame_with_text(page, "histórico do preço horário")
+        frame = find_frame_with_any_text(page, ["histórico do preço horário", "histórico do preco horario"])
         if frame is None:
-            # tenta sem acento
-            frame = find_frame_with_text(page, "historico do preco horario")
-        if frame is None:
-            raise RuntimeError(
-                "Não achei o frame do report (texto da aba não aparece). "
-                "Isso geralmente indica que o conteúdo ainda está carregando dentro de iframe diferente."
-            )
+            raise RuntimeError("Não achei o iframe do report (texto da aba não apareceu).")
 
-        # 1) Aba do horário
-        ok = click_text(frame, ["histórico do preço horário", "histórico do preco horario"])
-        frame.wait_for_timeout(4000)
-
-        # 2) Força visual “preço médio por hora”
+        # Aba do horário + visual por hora
+        click_text(frame, ["histórico do preço horário", "histórico do preco horario"])
+        frame.wait_for_timeout(5000)
         click_text(frame, ["preço médio por hora", "preco medio por hora"])
         frame.wait_for_timeout(5000)
 
-        # 3) Hover em algum visual container pra aparecer o menu
-        # (esses seletores variam; usamos vários)
-        hover_selectors = [
-            "div.visualContainer",
-            "div[role='presentation']",
-            "svg",
-            "canvas",
-        ]
-        hovered = False
-        for sel in hover_selectors:
+        # Scroll pra “acordar” visuais (lazy render)
+        try:
+            frame.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        except Exception:
             try:
-                loc = frame.locator(sel).first
-                if loc.count() > 0:
-                    loc.hover(timeout=5000)
-                    hovered = True
-                    break
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             except Exception:
-                continue
+                pass
 
-        frame.wait_for_timeout(1500)
+        frame.wait_for_timeout(4000)
 
-        # 4) Botão de “Mais opções” / “More options” (…)
-        more_selectors = [
-            "button[aria-label*='More options']",
-            "button[aria-label*='Mais opções']",
-            "button[title*='More options']",
-            "button[title*='Mais opções']",
-            "[aria-label='More options']",
-            "[aria-label='Mais opções']",
-        ]
-
-        more_btn = None
-        for sel in more_selectors:
+        # Scroll de volta pro topo (às vezes o visual está em cima)
+        try:
+            frame.evaluate("window.scrollTo(0, 0)")
+        except Exception:
             try:
-                loc = frame.locator(sel).first
-                if loc.count() > 0:
-                    more_btn = loc
-                    break
+                page.evaluate("window.scrollTo(0, 0)")
             except Exception:
+                pass
+
+        frame.wait_for_timeout(8000)
+
+        print("Captured querydata responses:", len(captured))
+        if not captured:
+            raise RuntimeError("Não capturei nenhuma resposta querydata com body.")
+
+        # pega as maiores respostas primeiro (mais chance de ser dataset)
+        captured.sort(key=lambda t: t[0], reverse=True)
+
+        best_df = None
+        best_len = 0
+
+        for size, j in captured[:15]:
+            rows: List[List[Any]] = []
+            collect_C_rows(j, rows)
+            idxs = infer_columns(rows)
+            if idxs is None:
                 continue
+            df = build_df(rows, idxs)
+            if len(df) > best_len:
+                best_len = len(df)
+                best_df = df
 
-        if more_btn is None:
-            raise RuntimeError(
-                "Não consegui achar o botão de 'Mais opções' (…).\n"
-                "Isso pode acontecer por 2 motivos:\n"
-                "1) o menu só aparece em hover e o visual não foi detectado (DOM diferente), ou\n"
-                "2) o report embed está com EXPORT desabilitado (bem comum no app.powerbi.com/view).\n"
-                "Se for (2), não dá pra exportar via UI e precisamos voltar para extração por querydata."
-            )
+        if best_df is None or best_df.empty:
+            # debug: mostra amostra das maiores respostas
+            top_sizes = [s for s, _ in captured[:5]]
+            rows0: List[List[Any]] = []
+            collect_C_rows(captured[0][1], rows0)
+            print("Top5 response sizes:", top_sizes)
+            print("Amostra C-rows (top5) do MAIOR response:", [r[:10] for r in rows0[:5]])
+            raise RuntimeError("Não consegui extrair dataset de PLD horário a partir de querydata (só agregados).")
 
-        more_btn.click(timeout=8000)
-
-        # 5) Exportar dados
-        export_clicked = click_text(frame, ["Exportar dados", "Export data", "Exportar", "Export"], timeout=8000)
-        if not export_clicked:
-            raise RuntimeError(
-                "Abri o menu (…), mas não achei 'Exportar dados'. "
-                "Provavelmente o export está desabilitado nesse report embed."
-            )
-
-        # 6) Modal opções (se aparecer)
-        click_text(frame, ["Dados subjacentes", "Underlying data", "Dados resumidos", "Summarized data"], timeout=3000)
-
-        # 7) Espera download no contexto da página (não do frame)
-        with page.expect_download(timeout=60000) as dl_info:
-            clicked = click_text(frame, ["Exportar", "Export"], timeout=10000)
-            if not clicked:
-                raise RuntimeError("Não achei o botão final 'Exportar' no modal.")
-
-        download = dl_info.value
-        out_path = os.path.join("/tmp", "pld_powerbi_export.csv")
-        download.save_as(out_path)
-        print("CSV baixado em:", out_path)
-
-        # 8) Lê CSV (detecta sep)
-        with open(out_path, "rb") as f:
-            sample = f.read(4096).decode("utf-8", errors="ignore")
-        sep = ";" if sample.count(";") > sample.count(",") else ","
-
-        df = pd.read_csv(out_path, sep=sep)
-        df.columns = [c.strip() for c in df.columns]
-        print("CSV columns:", df.columns.tolist())
-
-        # Mapeia colunas
-        cols_lower = {c.lower(): c for c in df.columns}
-        def pick(*names):
-            for n in names:
-                if n.lower() in cols_lower:
-                    return cols_lower[n.lower()]
-            return None
-
-        col_dia = pick("DIA", "Data", "Date", "Dia")
-        col_hora = pick("HORA", "Hora", "Hour", "HORA_INICIO", "Hora Início", "Hora Inicio")
-        col_sub = pick("SUBMERCADO", "Submercado", "SBM", "Submercado (SBM)")
-        col_val = pick("PLD", "PLD_HORA", "PLD HORA", "Preço", "Preco", "Valor", "Value", "Price")
-
-        if not col_dia or not col_val:
-            raise RuntimeError(f"Não consegui mapear colunas no CSV. DIA={col_dia}, VAL={col_val}, HORA={col_hora}, SUB={col_sub}")
-
-        out = pd.DataFrame()
-        out["DIA"] = pd.to_datetime(df[col_dia], errors="coerce").dt.strftime("%Y-%m-%d")
-        out["HORA"] = pd.to_numeric(df[col_hora], errors="coerce").fillna(0).astype(int) if col_hora else 0
-        out["SUBMERCADO"] = df[col_sub].astype(str).str.strip().str.lower() if col_sub else "avg"
-        out["PLD_HORA"] = normalize_decimal_series(df[col_val])
-
-        out = out.dropna(subset=["DIA", "PLD_HORA"])
-        out = out[out["HORA"].between(0, 24)]
-
-        y = date.today().year
-        y0 = y - 1
-        out = out[out["DIA"].str.startswith(str(y0)) | out["DIA"].str.startswith(str(y))].copy()
-
-        print("linhas após limpeza:", len(out))
-        write_sqlite(out[["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]])
+        print("Dataset extraído. Linhas:", best_len)
+        write_sqlite(best_df[["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]])
 
         ctx.close()
         browser.close()
