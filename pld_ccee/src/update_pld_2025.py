@@ -196,16 +196,23 @@ def load_csv_to_sqlite(csv_url: str, sess) -> None:
 def main():
     sess = make_session()
 
+    # garante que o DB existe e tem as tabelas, mesmo se o download falhar
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    con = sqlite3.connect(DB_PATH)
+    ensure_tables(con)
+    con.close()
+    print("DB_PATH (update):", DB_PATH)
+
     for y in years_to_update():
         print(f"\n=== Atualizando PLD horário ano {y} ===")
         try:
             csv_url = get_year_csv_url(y, sess)
         except Exception as e:
-            # não derruba o job se o ano novo ainda não existir ou se o site bloquear um pedaço
             print(f"⚠️ Não consegui obter URL do ano {y}: {e}")
             continue
 
         load_csv_to_sqlite(csv_url, sess)
+
 
 
 if __name__ == "__main__":
