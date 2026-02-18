@@ -1,21 +1,12 @@
 import io
 import os
-import re
 import sqlite3
 from datetime import date
-from typing import Optional, Dict
 
 import pandas as pd
 import requests
 
-# tenta usar cloudscraper (resolve muitos 403/Cloudflare)
-try:
-    import cloudscraper  # type: ignore
-except Exception:
-    cloudscraper = None
-
-
-DATASET_PAGE = "https://dadosabertos.ccee.org.br/dataset/pld_horario"
+# Base = .../pld_ccee
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "data", "pld_ccee.sqlite")
 
@@ -24,27 +15,11 @@ UA = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-# 🔒 Usar resource UUID fixo por ano (evita depender da página do dataset)
-RESOURCE_ID_BY_YEAR: Dict[int, str] = {
-    2025: "2a180a6b-f092-43eb-9f82-a48798b803dc",
-    2026: "3f279d6b-1069-42f7-9b0a-217b084729c4",
+# ✅ Links diretos (pda-download) – não passam pelo CKAN e não dão 403
+PDA_BY_YEAR = {
+    2025: "https://pda-download.ccee.org.br/korJMXwpSLGyVlpRMQWduA/content",
+    2026: "https://pda-download.ccee.org.br/6A5wq97KTCWv_bvs3CqsQQ/content",
 }
-
-
-def make_session():
-    if cloudscraper is not None:
-        s = cloudscraper.create_scraper()
-    else:
-        s = requests.Session()
-    s.headers.update(
-        {
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Connection": "keep-alive",
-        }
-    )
-    return s
 
 
 def years_to_update():
@@ -54,6 +29,7 @@ def years_to_update():
 
 def ensure_tables(con: sqlite3.Connection) -> None:
     cur = con.cursor()
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pld_horario (
             DIA TEXT,
@@ -62,6 +38,7 @@ def ensure_tables(con: sqlite3.Connection) -> None:
             PLD_HORA REAL
         )
     """)
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pld_medio (
             DIA TEXT,
@@ -69,71 +46,43 @@ def ensure_tables(con: sqlite3.Connection) -> None:
             PLD_MEDIO REAL
         )
     """)
+
     cur.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_pld_horario
         ON pld_horario (DIA, HORA, SUBMERCADO)
     """)
+
     con.commit()
 
 
-def _get_text(sess, url: str, timeout: int = 60) -> str:
-    r = sess.get(url, timeout=timeout)
+def _count_rows(db_path: str, table: str) -> int:
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    try:
+        n = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    except Exception:
+        n = 0
+    con.close()
+    return int(n)
+
+
+def fetch_csv_text(url: str) -> str:
+    r = requests.get(url, headers={"User-Agent": UA}, timeout=180)
     r.raise_for_status()
     return r.text
 
 
-def resource_page_url_from_dataset_html(html: str, year: int) -> str:
-    # procura link do resource do ano
-    pattern = re.compile(
-        rf'href="(/dataset/pld_horario/resource/[a-f0-9-]+)".*?>\s*pld_horario_{year}\s*<',
-        re.IGNORECASE | re.DOTALL,
-    )
-    m = pattern.search(html)
-    if not m:
-        raise RuntimeError(f"Não achei link do resource pld_horario_{year} na página do dataset.")
-    return "https://dadosabertos.ccee.org.br" + m.group(1)
-
-
-def extract_pda_download_url(resource_page_html: str) -> str:
-    # URL direta costuma ser pda-download.../content
-    m = re.search(r"(https://pda-download\.ccee\.org\.br/[A-Za-z0-9_\-]+/content)", resource_page_html)
-    if not m:
-        raise RuntimeError("Não achei link pda-download.../content na página do resource.")
-    return m.group(1)
-
-
-def get_year_csv_url(year: int, sess) -> str:
-    # 1) Se você fixou resource id por ano, usa direto (sem depender da listagem do dataset)
-    if year in RESOURCE_ID_BY_YEAR:
-        rid = RESOURCE_ID_BY_YEAR[year]
-        resource_page = f"https://dadosabertos.ccee.org.br/dataset/pld_horario/resource/{rid}"
-        html_res = _get_text(sess, resource_page, timeout=60)
-        return extract_pda_download_url(html_res)
-
-    # 2) Caso contrário, tenta descobrir via página do dataset (precisa não estar bloqueada)
-    html = _get_text(sess, DATASET_PAGE, timeout=60)
-    res_page = resource_page_url_from_dataset_html(html, year)
-    html_res = _get_text(sess, res_page, timeout=60)
-    return extract_pda_download_url(html_res)
-
-
-def load_csv_to_sqlite(csv_url: str, sess) -> None:
-    print("Baixando CSV:", csv_url)
-    resp = sess.get(csv_url, timeout=180)
-    resp.raise_for_status()
-
-    sample = resp.text[:2000]
+def load_csv_text_to_sqlite(csv_text: str) -> None:
+    sample = csv_text[:2000]
     sep = ";" if sample.count(";") > sample.count(",") else ","
 
-    df = pd.read_csv(io.StringIO(resp.text), sep=sep)
+    df = pd.read_csv(io.StringIO(csv_text), sep=sep)
     df.columns = [c.strip().upper() for c in df.columns]
-    print("Colunas:", df.columns.tolist())
 
-    # Esperado no CSV do PLD horário:
-    # DIA (DD/MM/AAAA), HORA, SUBMERCADO, PLD_HORA
+    # CSV oficial geralmente tem: DIA (DD/MM/AAAA), HORA, SUBMERCADO, PLD_HORA
     for c in ["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]:
         if c not in df.columns:
-            raise RuntimeError(f"Coluna {c} não encontrada no CSV.")
+            raise RuntimeError(f"Coluna {c} não encontrada no CSV. Colunas: {df.columns.tolist()}")
 
     df2 = df[["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]].copy()
 
@@ -144,6 +93,7 @@ def load_csv_to_sqlite(csv_url: str, sess) -> None:
     df2["HORA"] = pd.to_numeric(df2["HORA"], errors="coerce").fillna(0).astype(int)
     df2["SUBMERCADO"] = df2["SUBMERCADO"].astype(str).str.strip().str.lower()
 
+    # PLD com vírgula decimal (se vier assim)
     pld_raw = df2["PLD_HORA"].astype(str).str.strip()
     mask_pt = pld_raw.str.contains(",", na=False)
     pld_raw.loc[mask_pt] = (
@@ -155,10 +105,8 @@ def load_csv_to_sqlite(csv_url: str, sess) -> None:
 
     df2 = df2[["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]].dropna()
 
-    print("Linhas após limpeza:", len(df2))
     if df2.empty:
-        print("⚠️ CSV sem dados válidos. Nada a atualizar.")
-        return
+        raise RuntimeError("CSV veio sem linhas válidas após limpeza.")
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH)
@@ -167,11 +115,12 @@ def load_csv_to_sqlite(csv_url: str, sess) -> None:
 
     min_dia = df2["DIA"].min()
     max_dia = df2["DIA"].max()
-    print(f"Atualizando intervalo {min_dia} → {max_dia}")
+    print(f"Atualizando intervalo {min_dia} → {max_dia} (linhas={len(df2)})")
 
     cur.execute("DELETE FROM pld_horario WHERE DIA BETWEEN ? AND ?", (min_dia, max_dia))
     df2.to_sql("pld_horario", con, if_exists="append", index=False)
 
+    # rebuild completo do pld_medio
     cur.execute("DELETE FROM pld_medio")
     cur.execute("""
         INSERT INTO pld_medio (DIA, HORA, PLD_MEDIO)
@@ -179,6 +128,7 @@ def load_csv_to_sqlite(csv_url: str, sess) -> None:
         FROM pld_horario
         GROUP BY DIA, HORA
     """)
+
     con.commit()
 
     n_h = cur.execute("SELECT COUNT(*) FROM pld_horario").fetchone()[0]
@@ -194,27 +144,25 @@ def load_csv_to_sqlite(csv_url: str, sess) -> None:
 
 
 def main():
-    sess = make_session()
-
-    # garante que o DB existe e tem as tabelas
+    # garante DB/tabelas existirem sempre
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     ensure_tables(con)
     con.close()
-    print("DB_PATH (update):", DB_PATH)
+    print("DB_PATH:", DB_PATH)
 
     updated_any = False
 
     for y in years_to_update():
-        print(f"\n=== Atualizando PLD horário ano {y} ===")
-        try:
-            csv_url = get_year_csv_url(y, sess)
-        except Exception as e:
-            print(f"⚠️ Não consegui obter URL do ano {y}: {e}")
+        url = PDA_BY_YEAR.get(y)
+        if not url:
+            print(f"⚠️ Sem PDA link configurado para {y}. Pulando.")
             continue
 
+        print(f"\n=== Baixando PLD horário {y} ===")
         before = _count_rows(DB_PATH, "pld_horario")
-        load_csv_to_sqlite(csv_url, sess)
+        csv_text = fetch_csv_text(url)
+        load_csv_text_to_sqlite(csv_text)
         after = _count_rows(DB_PATH, "pld_horario")
 
         if after > before:
@@ -222,18 +170,6 @@ def main():
 
     if not updated_any:
         raise SystemExit("❌ Nenhum dado novo foi carregado (pld_horario não aumentou). Verifique download/URL.")
-
-
-def _count_rows(db_path: str, table: str) -> int:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    try:
-        n = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-    except Exception:
-        n = 0
-    con.close()
-    return int(n)
-
 
 
 if __name__ == "__main__":
