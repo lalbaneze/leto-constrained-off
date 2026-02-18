@@ -2,7 +2,7 @@ import os
 import re
 import sqlite3
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from playwright.sync_api import sync_playwright
@@ -55,6 +55,7 @@ def write_sqlite(df: pd.DataFrame) -> None:
     cur.execute("DELETE FROM pld_horario WHERE DIA BETWEEN ? AND ?", (min_dia, max_dia))
     df.to_sql("pld_horario", con, if_exists="append", index=False)
 
+    # Rebuild completo do pld_medio (igual ao seu racional original)
     cur.execute("DELETE FROM pld_medio")
     cur.execute("""
         INSERT INTO pld_medio (DIA, HORA, PLD_MEDIO)
@@ -62,7 +63,6 @@ def write_sqlite(df: pd.DataFrame) -> None:
         FROM pld_horario
         GROUP BY DIA, HORA
     """)
-
     con.commit()
 
     n_h = cur.execute("SELECT COUNT(*) FROM pld_horario").fetchone()[0]
@@ -78,12 +78,9 @@ def write_sqlite(df: pd.DataFrame) -> None:
 
 
 def looks_like_querydata(url: str) -> bool:
-    return "/public/reports/querydata" in url and "synchronous=true" in url
+    return "/public/reports/querydata" in url
 
 
-# -----------------------------
-# RECUPERA "C": [...] de QUALQUER lugar do JSON
-# -----------------------------
 def collect_C_rows(obj: Any, out: List[List[Any]]) -> None:
     if isinstance(obj, dict):
         if "C" in obj and isinstance(obj["C"], list):
@@ -95,101 +92,141 @@ def collect_C_rows(obj: Any, out: List[List[Any]]) -> None:
             collect_C_rows(it, out)
 
 
-def to_datetime_series(x: pd.Series) -> pd.Series:
+def normalize_date(v: Any) -> Optional[str]:
+    s = str(v).strip()
+
+    # ISO string
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        return s[:10]
+
+    # excel serial, unix ms/s
+    try:
+        x = float(v)
+
+        # excel serial típico
+        if 30000 <= x <= 70000:
+            dt = pd.to_datetime(x, unit="D", origin="1899-12-30", errors="coerce")
+            if pd.notna(dt):
+                return dt.strftime("%Y-%m-%d")
+
+        # unix ms
+        if 1e12 <= x <= 2e12:
+            dt = pd.to_datetime(x, unit="ms", errors="coerce")
+            if pd.notna(dt):
+                return dt.strftime("%Y-%m-%d")
+
+        # unix s
+        if 1e9 <= x <= 2e9:
+            dt = pd.to_datetime(x, unit="s", errors="coerce")
+            if pd.notna(dt):
+                return dt.strftime("%Y-%m-%d")
+
+    except Exception:
+        pass
+
+    return None
+
+
+def is_hour(v: Any) -> bool:
+    try:
+        x = int(float(v))
+        return 0 <= x <= 24
+    except Exception:
+        return False
+
+
+def is_submarket(v: Any) -> bool:
+    s = str(v).strip().lower()
+    return bool(re.search(r"(norte|nordeste|sul|sudeste|se/co|seco|centro|oeste|ne\b|se\b|co\b|n\b|s\b)", s))
+
+
+def infer_columns(rows: List[List[Any]]) -> Optional[Tuple[int, int, int, int]]:
     """
-    Converte DIA que pode vir como:
-      - 'YYYY-MM-DD' ou 'YYYY-MM-DDTHH:MM:SS'
-      - excel serial (ex: 45200)
-      - unix epoch em ms (1.7e12) ou s (1.7e9)
-    Retorna string YYYY-MM-DD (ou NaN).
+    Descobre (dia, hora, sub, pld) olhando taxa de "match" por coluna.
     """
-    s = x.copy()
+    rows = [r for r in rows if isinstance(r, list) and len(r) >= 4]
+    if not rows:
+        return None
 
-    # tenta string primeiro
-    s_str = s.astype(str)
-    s_str = s_str.str.strip()
+    max_len = min(max(len(r) for r in rows), 25)
 
-    # caso ISO com hora: pega os 10 primeiros
-    cand = s_str.str.slice(0, 10)
-    mask_iso = cand.str.match(r"^\d{4}-\d{2}-\d{2}$", na=False)
-    out = pd.Series([None] * len(s), index=s.index, dtype="object")
-    out.loc[mask_iso] = cand.loc[mask_iso]
+    stats = []
+    for i in range(max_len):
+        col = [r[i] for r in rows if len(r) > i]
+        if not col:
+            continue
 
-    # o resto: tenta numérico
-    mask_rest = ~mask_iso
-    if mask_rest.any():
-        num = pd.to_numeric(s.loc[mask_rest], errors="coerce")
+        dia_rate = sum(1 for v in col if normalize_date(v) is not None) / len(col)
+        hora_rate = sum(1 for v in col if is_hour(v)) / len(col)
+        sub_rate  = sum(1 for v in col if is_submarket(v)) / len(col)
+        num_rate  = pd.to_numeric(pd.Series(col), errors="coerce").notna().mean()
 
-        # excel serial típico ~ 40000-60000
-        mask_excel = num.between(30000, 70000)
-        if mask_excel.any():
-            dt = pd.to_datetime(num.loc[mask_excel], unit="D", origin="1899-12-30", errors="coerce")
-            out.loc[mask_rest[mask_rest].index[mask_excel]] = dt.dt.strftime("%Y-%m-%d").values
+        stats.append((i, dia_rate, hora_rate, sub_rate, num_rate))
 
-        # unix ms ~ 1e12-2e12
-        mask_ms = num.between(1e12, 2e12)
-        if mask_ms.any():
-            dt = pd.to_datetime(num.loc[mask_ms], unit="ms", errors="coerce")
-            out.loc[mask_rest[mask_rest].index[mask_ms]] = dt.dt.strftime("%Y-%m-%d").values
+    if not stats:
+        return None
 
-        # unix s ~ 1e9-2e9
-        mask_s = num.between(1e9, 2e9)
-        if mask_s.any():
-            dt = pd.to_datetime(num.loc[mask_s], unit="s", errors="coerce")
-            out.loc[mask_rest[mask_rest].index[mask_s]] = dt.dt.strftime("%Y-%m-%d").values
+    dia_i  = max(stats, key=lambda t: t[1])[0]
+    hora_i = max(stats, key=lambda t: t[2])[0]
+    sub_i  = max(stats, key=lambda t: t[3])[0]
 
-    return out
+    # pld: coluna numérica que não seja dia/hora/sub
+    cand = [t for t in stats if t[0] not in {dia_i, hora_i, sub_i}]
+    if not cand:
+        return None
+    pld_i = max(cand, key=lambda t: t[4])[0]
 
+    # valida mínimos (bem permissivo)
+    dia_rate  = next(t[1] for t in stats if t[0] == dia_i)
+    hora_rate = next(t[2] for t in stats if t[0] == hora_i)
+    sub_rate  = next(t[3] for t in stats if t[0] == sub_i)
+    if dia_rate < 0.05 or hora_rate < 0.10 or sub_rate < 0.03:
+        return None
 
-def score_rows_as_pld(rows: List[List[Any]]) -> int:
-    """
-    Score para rows parecerem [DIA, HORA, SUBMERCADO, PLD].
-    (avaliamos 4 primeiras colunas)
-    """
-    rows4 = [r[:4] for r in rows if isinstance(r, list) and len(r) >= 4]
-    if not rows4:
-        return 0
-
-    df = pd.DataFrame(rows4, columns=["c0", "c1", "c2", "c3"])
-
-    # DIA ok?
-    dia = to_datetime_series(df["c0"])
-    ok_dia = dia.notna().mean()
-
-    # HORA 0..24
-    hora = pd.to_numeric(df["c1"], errors="coerce")
-    ok_h = ((hora >= 0) & (hora <= 24)).mean()
-
-    # SUBMERCADO (string com pistas)
-    sub = df["c2"].astype(str).str.lower()
-    hits = sub.str.contains("norte|nord|sul|sud|se/co|sudeste|centro|co|ne\\b|se\\b", regex=True, na=False).mean()
-
-    # PLD numérico
-    pld = pd.to_numeric(df["c3"], errors="coerce")
-    ok_pld = pld.notna().mean()
-
-    return int(ok_dia * 40) + int(ok_h * 30) + int(hits * 15) + int(ok_pld * 15)
+    return (dia_i, hora_i, sub_i, pld_i)
 
 
-def build_clean_df(rows: List[List[Any]]) -> pd.DataFrame:
-    rows4 = [r[:4] for r in rows if isinstance(r, list) and len(r) >= 4]
-    df = pd.DataFrame(rows4, columns=["DIA", "HORA", "SUBMERCADO", "PLD_HORA"])
+def build_df(rows: List[List[Any]], idxs: Tuple[int, int, int, int]) -> pd.DataFrame:
+    di, hi, si, pi = idxs
+    out = []
 
-    df["DIA"] = to_datetime_series(df["DIA"])
-    df["HORA"] = pd.to_numeric(df["HORA"], errors="coerce").fillna(-1).astype(int)
-    df["PLD_HORA"] = pd.to_numeric(df["PLD_HORA"], errors="coerce")
-    df["SUBMERCADO"] = df["SUBMERCADO"].astype(str).str.strip().str.lower()
+    for r in rows:
+        if not isinstance(r, list) or len(r) <= max(idxs):
+            continue
 
-    df = df.dropna(subset=["DIA", "PLD_HORA"])
-    df = df[df["HORA"].between(0, 24)]
-    df = df[df["SUBMERCADO"].str.len().between(1, 50)]
+        dia = normalize_date(r[di])
+        if dia is None:
+            continue
+
+        try:
+            hora = int(float(r[hi]))
+        except Exception:
+            continue
+
+        sub = str(r[si]).strip().lower()
+        pld = pd.to_numeric(pd.Series([r[pi]]), errors="coerce").iloc[0]
+        if pd.isna(pld):
+            continue
+
+        out.append((dia, hora, sub, float(pld)))
+
+    df = pd.DataFrame(out, columns=["DIA", "HORA", "SUBMERCADO", "PLD_HORA"])
 
     # mantém ano atual e anterior
     y = date.today().year
     y0 = y - 1
     df = df[df["DIA"].str.startswith(str(y0)) | df["DIA"].str.startswith(str(y))].copy()
 
-    return df[["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]]
+    return df
+
+
+def click_if_exists(page, texts: List[str], timeout_ms: int = 6000) -> None:
+    for txt in texts:
+        try:
+            page.locator(f"text={txt}").first.click(timeout=timeout_ms)
+            return
+        except Exception:
+            pass
 
 
 def main() -> None:
@@ -210,53 +247,55 @@ def main() -> None:
         page.on("response", on_response)
 
         page.goto(POWERBI_VIEW_URL, wait_until="domcontentloaded", timeout=120000)
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(5000)
 
-        # tenta forçar aba do horário
-        for txt in ["histórico do preço horário", "histórico do preco horario"]:
-            try:
-                page.locator(f"text={txt}").first.click(timeout=4000)
-                break
-            except Exception:
-                pass
+        # Aba do horário
+        click_if_exists(page, ["histórico do preço horário", "histórico do preco horario"])
 
-        page.wait_for_timeout(12000)
+        page.wait_for_timeout(6000)
+
+        # Força o visual de hora (sem filtro de submercado)
+        click_if_exists(page, ["preço médio por hora", "preco medio por hora"])
+
+        # espera mais pra capturar mais querydatas (antes estava vindo só 4)
+        page.wait_for_timeout(18000)
 
         print("Captured querydata responses:", len(captured_jsons))
         if not captured_jsons:
             raise RuntimeError("Não capturei respostas querydata (status 200).")
 
-        best_score = -1
-        best_rows: Optional[List[List[Any]]] = None
-        best_idx = None
+        best_len = -1
+        best_idxs = None
+        best_rows = None
 
-        for i, j in enumerate(captured_jsons):
+        for j in captured_jsons:
             rows: List[List[Any]] = []
             collect_C_rows(j, rows)
-            sc = score_rows_as_pld(rows)
-            if sc > best_score:
-                best_score = sc
+            idxs = infer_columns(rows)
+            if idxs is None:
+                continue
+
+            df = build_df(rows, idxs)
+            if len(df) > best_len:
+                best_len = len(df)
+                best_idxs = idxs
                 best_rows = rows
-                best_idx = i
 
-        print("best_score:", best_score, "| best_idx:", best_idx)
+        if best_idxs is None or best_len <= 0:
+            # debug útil
+            rows0: List[List[Any]] = []
+            collect_C_rows(captured_jsons[-1], rows0)
+            print("Amostra C-rows (top5) do último JSON:", [r[:10] for r in rows0[:5]])
+            raise RuntimeError("Não consegui identificar colunas DIA/HORA/SUB/PLD em nenhuma resposta.")
 
-        if best_rows is None or best_score < 50:
-            # debug útil: mostra amostra da melhor tentativa (primeiras linhas)
-            sample = [r[:6] for r in (best_rows[:5] if best_rows else [])]
-            print("Amostra C-rows (top5):", sample)
-            raise RuntimeError(
-                f"Não identifiquei PLD horário em nenhuma resposta querydata. best_score={best_score}"
-            )
+        print("Melhor candidato: linhas=", best_len, "| idxs(dia,hora,sub,pld)=", best_idxs)
 
-        df = build_clean_df(best_rows)
-        print("linhas após limpeza:", len(df))
-        if df.empty:
-            sample = [r[:6] for r in (best_rows[:5] if best_rows else [])]
-            print("Amostra C-rows (top5):", sample)
-            raise RuntimeError("DataFrame vazio após limpeza (mesmo no melhor candidato).")
+        df_final = build_df(best_rows, best_idxs)
+        print("linhas finais:", len(df_final))
+        if df_final.empty:
+            raise RuntimeError("DataFrame vazio no final.")
 
-        write_sqlite(df)
+        write_sqlite(df_final)
 
         ctx.close()
         browser.close()
