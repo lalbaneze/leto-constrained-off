@@ -24,11 +24,11 @@ UA = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-# 🔧 Fallback opcional: se o site bloquear listagem do dataset,
-# você pode fixar aqui os resource UUIDs por ano.
-# Exemplo (você já me mandou o de 2026):
-# RESOURCE_ID_BY_YEAR = {2026: "3f279d6b-1069-42f7-9b0a-217b084729c4"}
-RESOURCE_ID_BY_YEAR: Dict[int, str] = {}
+# 🔒 Usar resource UUID fixo por ano (evita depender da página do dataset)
+RESOURCE_ID_BY_YEAR: Dict[int, str] = {
+    2025: "2a180a6b-f092-43eb-9f82-a48798b803dc",
+    2026: "3f279d6b-1069-42f7-9b0a-217b084729c4",
+}
 
 
 def make_session():
