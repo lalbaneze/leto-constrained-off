@@ -252,13 +252,11 @@ def main():
     print("Melhor DF linhas:", len(best_df))
 
     if best_df.empty:
-        # salva debug para a gente inspecionar
-        DEBUG_OUT.parent.mkdir(parents=True, exist_ok=True)
-        with open(DEBUG_OUT, "w", encoding="utf-8") as f:
-            json.dump(payloads[0] if payloads else {}, f, ensure_ascii=False, indent=2)
-        print(f"📦 Debug salvo em: {DEBUG_OUT}")
-
-        raise SystemExit(f"❌ Não identifiquei dataset de PLD médio diário. Debug salvo em: {DEBUG_OUT}")
+       DEBUG_OUT.parent.mkdir(parents=True, exist_ok=True)
+       with open(DEBUG_OUT, "w", encoding="utf-8") as f:
+           json.dump(payloads[0] if payloads else {}, f, ensure_ascii=False, indent=2)
+       print(f"📦 Debug salvo em: {DEBUG_OUT}")
+       raise SystemExit(f"❌ Não identifiquei dataset de PLD médio diário. Debug salvo em: {DEBUG_OUT}")
 
     load_to_sqlite(best_df)
 
