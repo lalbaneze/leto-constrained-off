@@ -3,6 +3,7 @@ import re
 import json
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 from playwright.sync_api import sync_playwright
@@ -10,11 +11,14 @@ from playwright.sync_api import sync_playwright
 
 REPORT_URL = "https://app.powerbi.com/view?r=eyJrIjoiNjk2NzUyNmEtNGZkMy00NDZhLWI4ZjgtMzEyMzhiMDA4NGRkIiwidCI6ImQ3YzNlNTA2LWVmODUtNDM4Ni04ZTU0LTJkZmNkYzgwMTdkMCJ9"
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../pld_ccee
-DB_PATH = os.path.join(BASE_DIR, "data", "pld_ccee.sqlite")
+# raiz do repositório (2 níveis acima de pld_ccee/src/)
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
-REPO_ROOT = os.path.dirname(os.path.dirname(BASE_DIR))  # .../ (raiz do repo)
-DEBUG_OUT = os.path.join(REPO_ROOT, "dashboard", "data", "_debug_querydata_sample.json")
+DEBUG_OUT = REPO_ROOT / "dashboard" / "data" / "_debug_querydata_sample.json"
+
+BASE_DIR = Path(__file__).resolve().parents[1]  # .../pld_ccee
+DB_PATH = BASE_DIR / "data" / "pld_ccee.sqlite"
+
 
 
 # ------------------------- SQLITE -------------------------
@@ -208,8 +212,8 @@ def load_to_sqlite(df: pd.DataFrame) -> None:
     if df.empty:
         raise SystemExit("❌ DF vazio após extração.")
 
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(DB_PATH))
     ensure_tables(con)
     cur = con.cursor()
 
@@ -249,10 +253,12 @@ def main():
 
     if best_df.empty:
         # salva debug para a gente inspecionar
-        os.makedirs(os.path.dirname(DEBUG_OUT), exist_ok=True)
+        DEBUG_OUT.parent.mkdir(parents=True, exist_ok=True)
         with open(DEBUG_OUT, "w", encoding="utf-8") as f:
-            json.dump(payloads[0] if payloads else {}, f, ensure_ascii=False)
-        raise SystemExit("❌ Não identifiquei dataset de PLD médio diário em nenhum querydata. (salvei debug em dashboard/data/_debug_querydata_sample.json)")
+            json.dump(payloads[0] if payloads else {}, f, ensure_ascii=False, indent=2)
+        print(f"📦 Debug salvo em: {DEBUG_OUT}")
+
+        raise SystemExit(f"❌ Não identifiquei dataset de PLD médio diário. Debug salvo em: {DEBUG_OUT}")
 
     load_to_sqlite(best_df)
 
