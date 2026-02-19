@@ -2,317 +2,293 @@ import os
 import re
 import json
 import sqlite3
-from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime
 
 import pandas as pd
 from playwright.sync_api import sync_playwright
 
-POWERBI_VIEW_URL = os.environ.get("POWERBI_VIEW_URL")
-if not POWERBI_VIEW_URL:
-    raise SystemExit("Defina POWERBI_VIEW_URL (env)")
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ---------------------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------------------
+# Link do relatório embed (da sua página Painel de Preços)
+REPORT_URL = "https://app.powerbi.com/view?r=eyJrIjoiNjk2NzUyNmEtNGZkMy00NDZhLWI4ZjgtMzEyMzhiMDA4NGRkIiwidCI6ImQ3YzNlNTA2LWVmODUtNDM4Ni04ZTU0LTJkZmNkYzgwMTdkMCJ9"
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../pld_ccee
 DB_PATH = os.path.join(BASE_DIR, "data", "pld_ccee.sqlite")
 
 
+# ---------------------------------------------------------------------
+# SQLITE
+# ---------------------------------------------------------------------
 def ensure_tables(con: sqlite3.Connection) -> None:
     cur = con.cursor()
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS pld_horario (
+        CREATE TABLE IF NOT EXISTS pld_diario (
             DIA TEXT,
-            HORA INTEGER,
             SUBMERCADO TEXT,
-            PLD_HORA REAL
+            PLD_DIA REAL
         )
     """)
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS pld_medio (
+        CREATE TABLE IF NOT EXISTS pld_diario_medio (
             DIA TEXT,
-            HORA INTEGER,
             PLD_MEDIO REAL
         )
     """)
     cur.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_pld_horario
-        ON pld_horario (DIA, HORA, SUBMERCADO)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pld_diario
+        ON pld_diario (DIA, SUBMERCADO)
     """)
     con.commit()
 
 
-def write_sqlite(df: pd.DataFrame) -> None:
+# ---------------------------------------------------------------------
+# HELPERS: detecta "tabelas" dentro do JSON do querydata
+# ---------------------------------------------------------------------
+_DATE_PATTERNS = [
+    # 2026-02-12
+    (re.compile(r"^\d{4}-\d{2}-\d{2}$"), "%Y-%m-%d"),
+    # 12/02/2026
+    (re.compile(r"^\d{2}/\d{2}/\d{4}$"), "%d/%m/%Y"),
+]
+
+def _parse_date_any(s: str):
+    s = str(s).strip()
+    for rx, fmt in _DATE_PATTERNS:
+        if rx.match(s):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except Exception:
+                return None
+    return None
+
+def _is_number(x) -> bool:
+    try:
+        if x is None:
+            return False
+        if isinstance(x, bool):
+            return False
+        float(x)
+        return True
+    except Exception:
+        return False
+
+def _walk(obj):
+    """Gera recursivamente tudo que existe no JSON."""
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from _walk(v)
+    elif isinstance(obj, list):
+        yield obj
+        for it in obj:
+            yield from _walk(it)
+
+def _find_candidate_tables(j: dict):
+    """
+    Procura por listas de linhas (list[list]) dentro do JSON.
+    PowerBI costuma devolver estruturas com arrays de arrays em algum ponto.
+    """
+    tables = []
+    for node in _walk(j):
+        if isinstance(node, list) and node:
+            # queremos algo como [[...],[...],...]
+            if all(isinstance(r, list) for r in node) and len(node) >= 10:
+                # e linhas com pelo menos 2 colunas
+                if all(len(r) >= 2 for r in node[:10]):
+                    tables.append(node)
+    return tables
+
+def _score_table(rows):
+    """
+    Heurística: tenta achar colunas (data, submercado, valor)
+    """
+    # só analisa um pedaço
+    sample = rows[:200]
+    ncols = max(len(r) for r in sample)
+    # normaliza linhas curtas
+    norm = [r + [None]*(ncols-len(r)) for r in sample]
+
+    # para cada coluna, medir % datas, % strings "submercado-like", % números
+    date_rate = []
+    sub_rate = []
+    num_rate = []
+    for c in range(ncols):
+        col = [r[c] for r in norm]
+        dr = sum(_parse_date_any(v) is not None for v in col) / len(col)
+        nr = sum(_is_number(v) for v in col) / len(col)
+        sr = sum(isinstance(v, str) for v in col) / len(col)
+
+        # submercado costuma ter strings e palavras tipo "n - norte", "se/co"
+        sub_hint = 0
+        for v in col:
+            if isinstance(v, str):
+                vv = v.lower()
+                if ("n - norte" in vv) or ("ne - nordeste" in vv) or ("s - sul" in vv) or ("se/co" in vv) or ("sudeste" in vv) or ("submercado" in vv):
+                    sub_hint += 1
+        sh = sub_hint / len(col)
+
+        date_rate.append(dr)
+        num_rate.append(nr)
+        sub_rate.append(max(sr, sh))
+
+    # escolhe melhores colunas
+    c_date = int(max(range(ncols), key=lambda i: date_rate[i]))
+    c_num  = int(max(range(ncols), key=lambda i: num_rate[i]))
+    c_sub  = int(max(range(ncols), key=lambda i: sub_rate[i]))
+
+    # score geral: queremos bastante data + bastante número + bastante sub
+    score = (date_rate[c_date] * 5) + (num_rate[c_num] * 3) + (sub_rate[c_sub] * 3)
+
+    return score, c_date, c_sub, c_num, date_rate[c_date], sub_rate[c_sub], num_rate[c_num]
+
+def extract_pld_diario_from_querydata_json(j: dict) -> pd.DataFrame:
+    """
+    Retorna DF com colunas: DIA (yyyy-mm-dd), SUBMERCADO, PLD_DIA
+    """
+    tables = _find_candidate_tables(j)
+    if not tables:
+        return pd.DataFrame(columns=["DIA", "SUBMERCADO", "PLD_DIA"])
+
+    best = None
+    best_info = None
+    for t in tables:
+        score, c_date, c_sub, c_num, dr, sr, nr = _score_table(t)
+        if best is None or score > best:
+            best = score
+            best_info = (t, c_date, c_sub, c_num, dr, sr, nr)
+
+    t, c_date, c_sub, c_num, dr, sr, nr = best_info
+    if dr < 0.2 or nr < 0.2:
+        # não parece série temporal
+        return pd.DataFrame(columns=["DIA", "SUBMERCADO", "PLD_DIA"])
+
+    # monta DF
+    rows = []
+    for r in t:
+        if len(r) <= max(c_date, c_sub, c_num):
+            continue
+        d = _parse_date_any(r[c_date])
+        if d is None:
+            continue
+        sub = r[c_sub]
+        val = r[c_num]
+        if not isinstance(sub, str):
+            continue
+        if not _is_number(val):
+            continue
+        rows.append((d.strftime("%Y-%m-%d"), sub.strip().lower(), float(val)))
+
+    df = pd.DataFrame(rows, columns=["DIA", "SUBMERCADO", "PLD_DIA"]).dropna()
+    return df
+
+
+# ---------------------------------------------------------------------
+# PLAYWRIGHT: abre painel, clica na aba "histórico da média diária",
+# captura respostas do endpoint querydata.
+# ---------------------------------------------------------------------
+def fetch_querydata_payloads_for_daily() -> list[dict]:
+    payloads = []
+
+    def on_response(resp):
+        try:
+            url = resp.url
+            if "querydata" in url and resp.status == 200:
+                ct = resp.headers.get("content-type", "")
+                if "application/json" in ct or "text/plain" in ct:
+                    payloads.append(resp.json())
+        except Exception:
+            pass
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.on("response", on_response)
+
+        page.goto(REPORT_URL, wait_until="domcontentloaded", timeout=120000)
+
+        # Espera aparecer algo do relatório
+        page.wait_for_timeout(8000)
+
+        # Clica na aba "histórico da média diária"
+        # (no print que você mandou, existe esse tab)
+        tab = page.get_by_text("histórico da média diária", exact=False).first
+        tab.click(timeout=30000)
+
+        # dá tempo de carregar e disparar querydata
+        page.wait_for_timeout(15000)
+
+        browser.close()
+
+    return payloads
+
+
+# ---------------------------------------------------------------------
+# LOAD TO SQLITE + rebuild mensal
+# ---------------------------------------------------------------------
+def load_diario_to_sqlite(df: pd.DataFrame) -> None:
     if df.empty:
-        raise RuntimeError("0 linhas no dataframe final — nada para gravar.")
+        raise SystemExit("❌ Não consegui extrair PLD médio diário do Power BI (DF vazio).")
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     ensure_tables(con)
     cur = con.cursor()
 
-    min_dia = df["DIA"].min()
-    max_dia = df["DIA"].max()
-    print(f"Atualizando intervalo {min_dia} → {max_dia}")
+    min_d = df["DIA"].min()
+    max_d = df["DIA"].max()
+    print(f"Atualizando pld_diario intervalo {min_d} → {max_d}")
 
-    cur.execute("DELETE FROM pld_horario WHERE DIA BETWEEN ? AND ?", (min_dia, max_dia))
-    df.to_sql("pld_horario", con, if_exists="append", index=False)
+    # remove intervalo recebido (evita duplicação)
+    cur.execute("DELETE FROM pld_diario WHERE DIA BETWEEN ? AND ?", (min_d, max_d))
+    df.to_sql("pld_diario", con, if_exists="append", index=False)
 
-    cur.execute("DELETE FROM pld_medio")
+    # reconstrói pld_diario_medio como média entre submercados
+    cur.execute("DELETE FROM pld_diario_medio WHERE DIA BETWEEN ? AND ?", (min_d, max_d))
     cur.execute("""
-        INSERT INTO pld_medio (DIA, HORA, PLD_MEDIO)
-        SELECT DIA, HORA, AVG(PLD_HORA)
-        FROM pld_horario
-        GROUP BY DIA, HORA
-    """)
+        INSERT INTO pld_diario_medio (DIA, PLD_MEDIO)
+        SELECT DIA, AVG(PLD_DIA)
+        FROM pld_diario
+        WHERE DIA BETWEEN ? AND ?
+        GROUP BY DIA
+    """, (min_d, max_d))
+
     con.commit()
 
-    n_h = cur.execute("SELECT COUNT(*) FROM pld_horario").fetchone()[0]
-    n_m = cur.execute("SELECT COUNT(*) FROM pld_medio").fetchone()[0]
-    min_db = cur.execute("SELECT MIN(DIA) FROM pld_medio").fetchone()[0]
-    max_db = cur.execute("SELECT MAX(DIA) FROM pld_medio").fetchone()[0]
+    n1 = cur.execute("SELECT COUNT(*) FROM pld_diario").fetchone()[0]
+    n2 = cur.execute("SELECT COUNT(*) FROM pld_diario_medio").fetchone()[0]
+    mindb = cur.execute("SELECT MIN(DIA) FROM pld_diario_medio").fetchone()[0]
+    maxdb = cur.execute("SELECT MAX(DIA) FROM pld_diario_medio").fetchone()[0]
     con.close()
 
     print("OK ✅")
-    print("pld_horario:", n_h, "linhas")
-    print("pld_medio  :", n_m, "linhas")
-    print("DB range   :", min_db, "→", max_db)
+    print("pld_diario       :", n1, "linhas")
+    print("pld_diario_medio :", n2, "linhas")
+    print("DB range diario  :", mindb, "→", maxdb)
 
 
-def looks_like_querydata(url: str) -> bool:
-    return "/public/reports/querydata" in url
+def main():
+    payloads = fetch_querydata_payloads_for_daily()
+    print("Captured querydata payloads:", len(payloads))
 
+    best_df = pd.DataFrame()
+    best_n = 0
 
-def click_text(scope, texts, timeout=8000) -> bool:
-    for t in texts:
-        try:
-            scope.locator(f"text={t}").first.click(timeout=timeout)
-            return True
-        except Exception:
-            pass
-    return False
+    for i, j in enumerate(payloads):
+        df = extract_pld_diario_from_querydata_json(j)
+        if len(df) > best_n:
+            best_df = df
+            best_n = len(df)
 
+    print("Melhor DF linhas:", best_n)
+    if best_df.empty:
+        raise SystemExit("❌ Não identifiquei dataset de PLD médio diário em nenhum querydata.")
 
-def find_frame_with_any_text(page, texts: List[str], timeout_ms: int = 120000):
-    page.wait_for_timeout(2000)
-    end = pd.Timestamp.now(tz="UTC").value // 10**6 + timeout_ms
-    while (pd.Timestamp.now(tz="UTC").value // 10**6) < end:
-        for fr in page.frames:
-            try:
-                if fr.is_detached():
-                    continue
-                for t in texts:
-                    if fr.locator(f"text={t}").count() > 0:
-                        return fr
-            except Exception:
-                continue
-        page.wait_for_timeout(1500)
-    return None
-
-
-def collect_C_rows(obj: Any, out: List[List[Any]]) -> None:
-    if isinstance(obj, dict):
-        if "C" in obj and isinstance(obj["C"], list):
-            out.append(obj["C"])
-        for v in obj.values():
-            collect_C_rows(v, out)
-    elif isinstance(obj, list):
-        for it in obj:
-            collect_C_rows(it, out)
-
-
-def normalize_date(v: Any) -> Optional[str]:
-    s = str(v).strip()
-    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
-        return s[:10]
-    try:
-        x = float(v)
-        if 30000 <= x <= 70000:
-            dt = pd.to_datetime(x, unit="D", origin="1899-12-30", errors="coerce")
-            if pd.notna(dt):
-                return dt.strftime("%Y-%m-%d")
-        if 1e12 <= x <= 2e12:
-            dt = pd.to_datetime(x, unit="ms", errors="coerce")
-            if pd.notna(dt):
-                return dt.strftime("%Y-%m-%d")
-        if 1e9 <= x <= 2e9:
-            dt = pd.to_datetime(x, unit="s", errors="coerce")
-            if pd.notna(dt):
-                return dt.strftime("%Y-%m-%d")
-    except Exception:
-        pass
-    return None
-
-
-def is_hour(v: Any) -> bool:
-    try:
-        x = int(float(v))
-        return 0 <= x <= 24
-    except Exception:
-        return False
-
-
-def is_submarket(v: Any) -> bool:
-    s = str(v).strip().lower()
-    return bool(re.search(r"(norte|nordeste|sul|sudeste|se/co|seco|centro|oeste|ne\b|se\b|co\b)", s))
-
-
-def infer_columns(rows: List[List[Any]]) -> Optional[Tuple[int, int, int, int]]:
-    rows = [r for r in rows if isinstance(r, list) and len(r) >= 4]
-    if not rows:
-        return None
-
-    max_len = min(max(len(r) for r in rows), 30)
-    stats = []
-    for i in range(max_len):
-        col = [r[i] for r in rows if len(r) > i]
-        if not col:
-            continue
-        dia_rate = sum(1 for v in col if normalize_date(v) is not None) / len(col)
-        hora_rate = sum(1 for v in col if is_hour(v)) / len(col)
-        sub_rate  = sum(1 for v in col if is_submarket(v)) / len(col)
-        num_rate  = pd.to_numeric(pd.Series(col), errors="coerce").notna().mean()
-        stats.append((i, dia_rate, hora_rate, sub_rate, num_rate))
-
-    if not stats:
-        return None
-
-    dia_i  = max(stats, key=lambda t: t[1])[0]
-    hora_i = max(stats, key=lambda t: t[2])[0]
-    sub_i  = max(stats, key=lambda t: t[3])[0]
-    cand = [t for t in stats if t[0] not in {dia_i, hora_i, sub_i}]
-    if not cand:
-        return None
-    pld_i = max(cand, key=lambda t: t[4])[0]
-
-    # mínimos um pouco mais fortes (pra não pegar “cards”)
-    dia_rate  = next(t[1] for t in stats if t[0] == dia_i)
-    hora_rate = next(t[2] for t in stats if t[0] == hora_i)
-    sub_rate  = next(t[3] for t in stats if t[0] == sub_i)
-    if dia_rate < 0.15 or hora_rate < 0.15 or sub_rate < 0.08:
-        return None
-
-    return (dia_i, hora_i, sub_i, pld_i)
-
-
-def build_df(rows: List[List[Any]], idxs: Tuple[int, int, int, int]) -> pd.DataFrame:
-    di, hi, si, pi = idxs
-    out = []
-    for r in rows:
-        if not isinstance(r, list) or len(r) <= max(idxs):
-            continue
-        dia = normalize_date(r[di])
-        if dia is None:
-            continue
-        try:
-            hora = int(float(r[hi]))
-        except Exception:
-            continue
-        sub = str(r[si]).strip().lower()
-        pld = pd.to_numeric(pd.Series([r[pi]]), errors="coerce").iloc[0]
-        if pd.isna(pld):
-            continue
-        out.append((dia, hora, sub, float(pld)))
-
-    df = pd.DataFrame(out, columns=["DIA", "HORA", "SUBMERCADO", "PLD_HORA"])
-    y = date.today().year
-    y0 = y - 1
-    df = df[df["DIA"].str.startswith(str(y0)) | df["DIA"].str.startswith(str(y))].copy()
-    return df
-
-
-def main() -> None:
-    # vamos guardar respostas com (bytes_len, json)
-    captured: List[Tuple[int, Dict[str, Any]]] = []
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(
-            viewport={"width": 1600, "height": 1200},
-            device_scale_factor=1,
-        )
-        page = ctx.new_page()
-
-        def on_response(resp):
-            try:
-                if resp.request.method == "POST" and looks_like_querydata(resp.url) and resp.status == 200:
-                    # pega tamanho bruto (heurística: a query do dataset é grande)
-                    body = resp.body()
-                    if body:
-                        j = resp.json()
-                        captured.append((len(body), j))
-            except Exception:
-                pass
-
-        page.on("response", on_response)
-
-        page.goto(POWERBI_VIEW_URL, wait_until="domcontentloaded", timeout=120000)
-
-        frame = find_frame_with_any_text(page, ["histórico do preço horário", "histórico do preco horario"])
-        if frame is None:
-            raise RuntimeError("Não achei o iframe do report (texto da aba não apareceu).")
-
-        # Aba do horário + visual por hora
-        click_text(frame, ["histórico do preço horário", "histórico do preco horario"])
-        frame.wait_for_timeout(5000)
-        click_text(frame, ["preço médio por hora", "preco medio por hora"])
-        frame.wait_for_timeout(5000)
-
-        # Scroll pra “acordar” visuais (lazy render)
-        try:
-            frame.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        except Exception:
-            try:
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            except Exception:
-                pass
-
-        frame.wait_for_timeout(4000)
-
-        # Scroll de volta pro topo (às vezes o visual está em cima)
-        try:
-            frame.evaluate("window.scrollTo(0, 0)")
-        except Exception:
-            try:
-                page.evaluate("window.scrollTo(0, 0)")
-            except Exception:
-                pass
-
-        frame.wait_for_timeout(8000)
-
-        print("Captured querydata responses:", len(captured))
-        if not captured:
-            raise RuntimeError("Não capturei nenhuma resposta querydata com body.")
-
-        # pega as maiores respostas primeiro (mais chance de ser dataset)
-        captured.sort(key=lambda t: t[0], reverse=True)
-
-        best_df = None
-        best_len = 0
-
-        for size, j in captured[:15]:
-            rows: List[List[Any]] = []
-            collect_C_rows(j, rows)
-            idxs = infer_columns(rows)
-            if idxs is None:
-                continue
-            df = build_df(rows, idxs)
-            if len(df) > best_len:
-                best_len = len(df)
-                best_df = df
-
-        if best_df is None or best_df.empty:
-            # debug: mostra amostra das maiores respostas
-            top_sizes = [s for s, _ in captured[:5]]
-            rows0: List[List[Any]] = []
-            collect_C_rows(captured[0][1], rows0)
-            print("Top5 response sizes:", top_sizes)
-            print("Amostra C-rows (top5) do MAIOR response:", [r[:10] for r in rows0[:5]])
-            raise RuntimeError("Não consegui extrair dataset de PLD horário a partir de querydata (só agregados).")
-
-        print("Dataset extraído. Linhas:", best_len)
-        write_sqlite(best_df[["DIA", "HORA", "SUBMERCADO", "PLD_HORA"]])
-
-        ctx.close()
-        browser.close()
+    # limpa: remove submercados “vazios” e mantém os 4 principais
+    # (sem assumir SE/CO; a média é entre todos que existirem)
+    best_df = best_df.dropna()
+    load_diario_to_sqlite(best_df)
 
 
 if __name__ == "__main__":
