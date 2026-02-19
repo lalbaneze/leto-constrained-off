@@ -1,14 +1,17 @@
+# export_pld_json.py
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 DB_PATH = os.path.join(BASE_DIR, "pld_ccee", "data", "pld_ccee.sqlite")
 
 OUT_DIR = os.path.join(BASE_DIR, "dashboard", "data")
 OUT_MONTHLY = os.path.join(OUT_DIR, "pld_monthly_avg_test.json")
 OUT_META = os.path.join(OUT_DIR, "pld_meta_test.json")
+
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -18,7 +21,7 @@ def main():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
 
-    # mensal = média do PLD médio diário do mês
+    # ✅ média mensal a partir da média diária (já é média dos submercados)
     rows = con.execute("""
       SELECT substr(DIA,1,7) as ym, AVG(PLD_MEDIO) as pld_medio_mensal
       FROM pld_diario_medio
@@ -34,7 +37,6 @@ def main():
       FROM pld_diario_medio
       WHERE length(DIA)=10
     """).fetchone()
-
     max_dia = rmax["max_dia"] if rmax else None
     con.close()
 
@@ -46,10 +48,7 @@ def main():
 
     with open(OUT_META, "w", encoding="utf-8") as f:
         json.dump(
-            {
-                "max_dia": max_dia,
-                "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            },
+            {"max_dia": max_dia, "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
             f,
             ensure_ascii=False,
             indent=2,
@@ -59,6 +58,7 @@ def main():
     print(" -", OUT_MONTHLY)
     print(" -", OUT_META)
     print("PLD max_dia:", max_dia)
+
 
 if __name__ == "__main__":
     main()
