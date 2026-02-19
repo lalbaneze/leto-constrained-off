@@ -1,9 +1,9 @@
-name: PLD — atualizar e PUBLICAR automaticamente (PowerBI diário)
+name: PLD — atualizar e PUBLICAR automaticamente
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 10 * * *"   # 07:00 Brasil (UTC-3)
+    - cron: "0 10 * * *"  # 07:00 Brasil (UTC-3)
 
 permissions:
   contents: write
@@ -25,48 +25,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pandas playwright
-          python -m playwright install --with-deps chromium
+          playwright install --with-deps chromium
 
       - name: Update PLD DB (PowerBI - médio diário)
         run: |
           python pld_ccee/src/update_pld_powerbi_diario_playwright.py
-
-      - name: Upload debug artifact (only if failed)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pld-debug
-          path: dashboard/data/_debug_querydata_sample.json
-
-      - name: Upload playwright screenshots (only if failed)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pld-screenshots
-          path: dashboard/data/_pw_*.png
-        continue-on-error: true
-
-
-      - name: Commit debug file (only if failed)
-        if: failure()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dashboard/data/_debug_querydata_sample.json || true
-          git commit -m "Debug querydata sample (PLD diário)" || true
-          git push || true
-   
-
-      - name: Debug PLD max_dia from sqlite
-        run: |
-          python - << 'PY'
-          import sqlite3
-          con = sqlite3.connect("pld_ccee/data/pld_ccee.sqlite")
-          r = con.execute("SELECT MIN(DIA), MAX(DIA) FROM pld_diario_medio WHERE length(DIA)=10").fetchone()
-          con.close()
-          print("min_dia:", r[0])
-          print("max_dia:", r[1])
-          PY
 
       - name: Export PLD TEST JSON
         run: |
@@ -79,10 +42,11 @@ jobs:
           import json, os
 
           def read(path):
-              if not os.path.exists(path):
+              try:
+                  with open(path, "r", encoding="utf-8") as f:
+                      return json.load(f)
+              except Exception:
                   return {}
-              with open(path, "r", encoding="utf-8") as f:
-                  return json.load(f)
 
           test = read("dashboard/data/pld_meta_test.json")
           off  = read("dashboard/data/pld_meta.json")
