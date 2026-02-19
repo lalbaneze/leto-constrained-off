@@ -31,6 +31,22 @@ jobs:
         run: |
           python pld_ccee/src/update_pld_powerbi_diario_playwright.py
 
+      - name: Upload debug artifact (only if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pld-debug
+          path: dashboard/data/_debug_querydata_sample.json
+
+      - name: Upload playwright screenshots (only if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pld-screenshots
+          path: dashboard/data/_pw_*.png
+        continue-on-error: true
+
+
       - name: Commit debug file (only if failed)
         if: failure()
         run: |
