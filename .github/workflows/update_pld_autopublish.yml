@@ -1,4 +1,4 @@
-name: PLD — atualizar e PUBLICAR automaticamente
+name: PLD — atualizar e PUBLICAR automaticamente (PowerBI diário)
 
 on:
   workflow_dispatch:
@@ -24,58 +24,22 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests cloudscraper
+          pip install pandas playwright
+          python -m playwright install --with-deps chromium
 
-      - name: Update PLD DB (dados abertos CCEE)
+      - name: Update PLD DB (PowerBI - médio diário)
         run: |
-          python pld_ccee/src/update_pld_2025.py
+          python pld_ccee/src/update_pld_powerbi_diario_playwright.py
 
-      - name: Debug DB after update (tables + counts)
-        run: |
-          python - << 'PY'
-          import sqlite3, os
-
-          path = "pld_ccee/data/pld_ccee.sqlite"
-          print("DB exists?", os.path.exists(path))
-          if os.path.exists(path):
-            print("DB size:", os.path.getsize(path), "bytes")
-
-          con = sqlite3.connect(path)
-          tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
-          print("Tables:", tables)
-
-          if "pld_horario" in tables:
-            print("pld_horario rows:", con.execute("SELECT COUNT(*) FROM pld_horario").fetchone()[0])
-          if "pld_medio" in tables:
-            print("pld_medio rows:", con.execute("SELECT COUNT(*) FROM pld_medio").fetchone()[0])
-            print("min/max:", con.execute("SELECT MIN(DIA), MAX(DIA) FROM pld_medio").fetchone())
-          con.close()
-          PY
-   
-
-      - name: Debug PLD sqlite (path + tables)
+      - name: Debug PLD max_dia from sqlite
         run: |
           python - << 'PY'
-          import os, sqlite3
-
-          path = "pld_ccee/data/pld_ccee.sqlite"
-          print("PWD:", os.getcwd())
-          print("DB path:", path)
-          print("DB exists?", os.path.exists(path))
-          if os.path.exists(path):
-              print("DB size:", os.path.getsize(path), "bytes")
-
-          con = sqlite3.connect(path)
-          tables = con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
-          print("Tables:", [t[0] for t in tables])
-
-          if any(t[0] == "pld_medio" for t in tables):
-              r = con.execute("SELECT MIN(DIA), MAX(DIA) FROM pld_medio WHERE length(DIA)=10").fetchone()
-              print("min_dia:", r[0])
-              print("max_dia:", r[1])
-          else:
-              print("⚠️ pld_medio não existe nesse arquivo.")
+          import sqlite3
+          con = sqlite3.connect("pld_ccee/data/pld_ccee.sqlite")
+          r = con.execute("SELECT MIN(DIA), MAX(DIA) FROM pld_diario_medio WHERE length(DIA)=10").fetchone()
           con.close()
+          print("min_dia:", r[0])
+          print("max_dia:", r[1])
           PY
 
       - name: Export PLD TEST JSON
