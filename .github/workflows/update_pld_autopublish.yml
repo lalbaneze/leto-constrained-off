@@ -64,6 +64,37 @@ jobs:
               f.write(f"test_max={test_max}\n")
               f.write(f"off_max={off_max}\n")
           PY
+          
+      - name: Guardrail: only current month can change
+        run: |
+          python - << 'PY'
+          import json
+          from datetime import datetime
+
+          def read(p):
+              try:
+                  with open(p,"r",encoding="utf-8") as f: 
+                      o = json.load(f)
+                      return o if isinstance(o, dict) else {}
+              except Exception:
+                  return {}
+
+          off = read("dashboard/data/pld_monthly_avg.json")
+          tst = read("dashboard/data/pld_monthly_avg_test.json")
+          meta = read("dashboard/data/pld_meta_test.json")
+
+          ym = meta.get("mes_atualizado")
+          if not ym:
+              raise SystemExit("❌ Guardrail: mes_atualizado não encontrado no meta_test")
+
+          # compara todos os meses exceto o ym
+          for k, v in off.items():
+              if k == ym:
+                  continue
+              if k in tst and tst[k] != v:
+                  raise SystemExit(f"❌ Guardrail: mês histórico mudou: {k} off={v} test={tst[k]}")
+          print("✅ Guardrail OK (só mês atual pode mudar):", ym)
+          PY
 
       - name: Publish TEST -> OFFICIAL (if needed)
         if: steps.decide.outputs.publish == 'true'
