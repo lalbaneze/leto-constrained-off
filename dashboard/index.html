@@ -9,96 +9,132 @@
 
   <style>
   :root{
-    --bg:#071021;          /* azul marinho bem escuro */
-    --card:#0b1a33;        /* navy card */
-    --card2:#0a1730;
-    --border:#123158;      /* navy border */
-    --text:#ffffff;        /* branco */
-    --muted:#b9c7de;       /* cinza-azulado */
-    --accent:#22c55e;      /* verde */
-    --accent2:#16a34a;
-    --input:#061225;       /* navy input */
+    --bg:#111110;          /* preto Leto */
+    --card:#1A1A18;        /* card escuro quente */
+    --card2:#161614;
+    --border:#2e2d29;      /* borda sutil */
+    --text:#F0EDE6;        /* off-white quente */
+    --muted:#BDB7A7;       /* cinza Leto */
+    --accent:#D8EEA9;      /* verde Leto */
+    --accent2:#A7C878;     /* verde médio Leto */
+    --accent3:#956A49;     /* marrom Leto */
+    --input:#0D0D0C;       /* input escuro */
   }
 
   *{box-sizing:border-box}
   body{
     margin:0;
     font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
-    background: radial-gradient(1200px 600px at 20% 0%, #0b1a33 0%, var(--bg) 55%);
+    background: var(--bg);
     color:var(--text);
   }
   .container{max-width:1200px;margin:0 auto;padding:22px}
-  h1{font-size:28px;margin:0 0 6px 0;letter-spacing:.2px}
-  h2{margin:0 0 12px 0}
-  small{color:var(--muted)}
+
+  /* Header com logo */
+  .site-header{
+    display:flex;
+    align-items:center;
+    gap:16px;
+    margin-bottom:20px;
+    padding-bottom:16px;
+    border-bottom:1px solid var(--border);
+  }
+  .site-header svg{
+    height:28px;
+    width:auto;
+    flex-shrink:0;
+  }
+  /* Inverte o logo preto para branco */
+  .site-header svg path{
+    fill: var(--text);
+  }
+  .header-title{
+    font-size:18px;
+    font-weight:500;
+    color:var(--muted);
+    letter-spacing:.3px;
+  }
+  .header-divider{
+    width:1px;
+    height:24px;
+    background:var(--border);
+  }
+  .page-label{
+    font-size:13px;
+    font-weight:600;
+    color:var(--accent);
+    text-transform:uppercase;
+    letter-spacing:1px;
+  }
+
+  h2{margin:0 0 12px 0;font-size:14px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.8px}
+  h3{margin:0 0 4px 0;font-size:12px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  small{color:var(--muted);font-size:11px}
 
   .card{
-    background: linear-gradient(180deg, var(--card) 0%, var(--card2) 100%);
-    border:1px solid rgba(18,49,88,.7);
-    border-radius:16px;
+    background: var(--card);
+    border:1px solid var(--border);
+    border-radius:12px;
     padding:16px;
     margin-bottom:14px;
-    box-shadow: 0 10px 30px rgba(0,0,0,.25);
   }
 
   .card-header{
-  display: flex;
-  align-items: center;          /* mesma altura */
-  justify-content: space-between;
-  gap: 12px;
-}
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
 
-.card-meta-inline{
-  display: flex;
-  gap: 16px;
-  font-size: 12px;
-  color: #ffffff;     /* branco puro */
-  white-space: nowrap;
-}
+  .card-meta-inline{
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
 
-.card-meta-inline span{
-  opacity: 1;         /* remove variação */
-}
+  .card-meta-inline span{ opacity: 1; }
 
-.card-status{
-  margin-top: 6px;
-  font-size: 11px;
-  color: rgba(255,255,255,0.92); /* ✅ branco */
-  text-align: right;
-}
+  .card-status{
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    text-align: right;
+  }
 
-
-
-
-
-  label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  label{display:block;font-size:11px;font-weight:600;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
   input,select{
     width:100%;
-    padding:10px 10px;
+    padding:9px 10px;
     background: var(--input);
     color: var(--text);
-    border:1px solid rgba(18,49,88,.9);
-    border-radius:10px;
+    border:1px solid var(--border);
+    border-radius:8px;
     outline:none;
+    font-size:13px;
   }
-  input::placeholder{color:rgba(185,199,222,.7)}
+  input::placeholder{color:rgba(189,183,167,.4)}
   input:focus,select:focus{
-    border-color: rgba(34,197,94,.85);
-    box-shadow: 0 0 0 3px rgba(34,197,94,.15);
+    border-color: rgba(216,238,169,.5);
+    box-shadow: 0 0 0 3px rgba(216,238,169,.08);
   }
 
   button{
-    padding:10px 14px;
-    border-radius:12px;
-    border:1px solid rgba(34,197,94,.55);
-    background: rgba(34,197,94,.12);
-    color: var(--text);
+    padding:9px 16px;
+    border-radius:8px;
+    border:1px solid var(--border);
+    background: rgba(216,238,169,.08);
+    color: var(--accent);
     cursor:pointer;
     font-weight:600;
+    font-size:13px;
+    letter-spacing:.3px;
+    transition: background .15s, border-color .15s;
   }
   button:hover{
-    background: rgba(34,197,94,.18);
-    border-color: rgba(34,197,94,.8);
+    background: rgba(216,238,169,.14);
+    border-color: rgba(216,238,169,.4);
   }
 
   .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
@@ -108,13 +144,14 @@
 
   /* KPIs */
   .kpi{
-    font-size:22px;
-    font-weight:800;
-    margin-top:6px;
+    font-size:24px;
+    font-weight:700;
+    margin-top:8px;
+    letter-spacing:-.5px;
   }
-  .kpiAccent{
-    color: var(--accent);
-  }
+  .kpiAccent{ color: var(--accent); }
+  .kpiAccent2{ color: var(--accent3); }
+
   .topRow{
     display:flex;
     align-items:center;
@@ -126,38 +163,50 @@
     align-items:center;
     gap:8px;
     padding:8px 12px;
-    border:1px solid rgba(18,49,88,.9);
+    border:1px solid var(--border);
     border-radius:999px;
-    background: rgba(6,18,37,.7);
+    background: rgba(26,26,24,.7);
     color: var(--muted);
+    font-size:12px;
   }
 </style>
 </head>
 
 <body>
-<div style="padding:10px;background:#ff0;color:#000;font-weight:700;">
-</div>
 <div class="container">
 
-  <h1>JGP Crédito: Análise de Constrained-Off</h1>
-  
+  <!-- Header com logo Leto -->
+  <div class="site-header">
+    <svg width="638" height="159" viewBox="0 0 638 159" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M45.0626 132.637H26.3201V118.112L60.0566 83.9067H0L0 64.2271H75.9877V35.1762H94.7302V49.7016L60.0566 83.9067H120.287V103.586H45.0626V132.637Z" fill="black"/>
+      <path d="M537.149 104.133C531.334 104.133 527.62 100.343 527.62 94.3402C527.62 88.4123 531.447 84.4728 537.262 84.4728C542.214 84.4728 545.291 87.2117 546.079 91.5639H541.839C541.314 89.3127 539.701 87.9245 537.187 87.9245C533.923 87.9245 531.784 90.5509 531.784 94.3402C531.784 98.0921 533.923 100.681 537.187 100.681C539.663 100.681 541.314 99.2552 541.802 97.0416H546.079C545.328 101.394 542.064 104.133 537.149 104.133Z" fill="black"/>
+      <path d="M563.437 87.5118L563.925 84.6979H567.452V103.908H563.888L563.437 100.981C562.199 102.707 560.173 104.133 557.172 104.133C551.957 104.133 548.092 100.456 548.092 94.3027C548.092 88.3748 551.957 84.4728 557.172 84.4728C560.173 84.4728 562.199 85.7485 563.437 87.5118ZM557.847 100.718C561.224 100.718 563.437 98.0921 563.437 94.3778C563.437 90.5884 561.224 87.9245 557.847 87.9245C554.47 87.9245 552.257 90.5509 552.257 94.3027C552.257 98.0921 554.47 100.718 557.847 100.718Z" fill="black"/>
+      <path d="M581.317 84.4728C586.569 84.4728 590.396 88.1497 590.396 94.3027C590.396 100.231 586.569 104.133 581.317 104.133C578.353 104.133 576.289 102.932 575.088 101.206V111.411H571.036V84.6979H574.563L575.051 87.5494C576.327 85.861 578.315 84.4728 581.317 84.4728ZM580.641 100.718C584.018 100.718 586.269 98.0546 586.269 94.3027C586.269 90.5133 584.018 87.9245 580.641 87.9245C577.265 87.9245 575.051 90.5133 575.051 94.2277C575.051 98.0546 577.265 100.718 580.641 100.718Z" fill="black"/>
+      <path d="M595.331 81.9966C593.943 81.9966 592.855 80.9836 592.855 79.5579C592.855 78.1321 593.943 77.1191 595.331 77.1191C596.719 77.1191 597.808 78.1321 597.808 79.5579C597.808 80.9836 596.719 81.9966 595.331 81.9966ZM593.268 103.908V84.6979H597.32V103.908H593.268Z" fill="black"/>
+      <path d="M600.616 98.6924V79.3327H604.668V84.6979H609.321V88.2622H604.668V98.2797C604.668 99.7805 605.231 100.343 606.657 100.343H609.734V103.908H605.832C602.155 103.908 600.616 102.182 600.616 98.6924Z" fill="black"/>
+      <path d="M626.349 87.5118L626.836 84.6979H630.363V103.908H626.799L626.349 100.981C625.111 102.707 623.085 104.133 620.083 104.133C614.868 104.133 611.004 100.456 611.004 94.3027C611.004 88.3748 614.868 84.4728 620.083 84.4728C623.085 84.4728 625.111 85.7485 626.349 87.5118ZM620.758 100.718C624.135 100.718 626.349 98.0921 626.349 94.3778C626.349 90.5884 624.135 87.9245 620.758 87.9245C617.382 87.9245 615.168 90.5509 615.168 94.3027C615.168 98.0921 617.382 100.718 620.758 100.718Z" fill="black"/>
+      <path d="M633.948 103.908V77.6444H638V103.908H633.948Z" fill="black"/>
+      <path d="M438.379 38.2417C471.635 38.2417 498.595 65.2019 498.595 98.4585C498.595 131.715 471.635 158.674 438.379 158.674C405.122 158.674 378.163 131.715 378.163 98.4585C378.163 65.202 405.122 38.2418 438.379 38.2417ZM438.73 60.8208C417.945 60.8208 401.095 77.6704 401.094 98.4556C401.094 119.241 417.945 136.091 438.73 136.091C459.516 136.091 476.365 119.241 476.365 98.4556C476.365 77.6704 459.515 60.8209 438.73 60.8208Z" fill="black"/>
+      <path fill-rule="evenodd" clip-rule="evenodd" d="M175.954 37.6353L175.954 58.8499L175.954 126.322C175.954 130.484 176.739 133.182 178.363 134.855C179.983 136.522 182.57 137.305 186.515 137.305H202.884V158.519H181.881C171.477 158.519 163.968 156.078 159.069 151.044C154.174 146.013 152.001 138.508 152.001 128.639V0H175.954V37.6353ZM178.102 135.444C178.122 135.463 178.143 135.481 178.163 135.499C178.139 135.477 178.115 135.456 178.091 135.433L178.102 135.444Z" fill="black"/>
+      <path d="M263.333 158.671C226.099 158.671 202.741 134.619 202.741 98.3099C202.741 61.7692 226.099 37.4858 261.021 37.4858C295.249 37.4858 318.145 59.2252 318.838 93.9157C318.838 96.9222 318.607 100.16 318.145 103.398H228.874V105.017C229.568 125.137 242.288 138.32 261.946 138.32C277.21 138.32 288.311 130.688 291.78 117.505H316.757C312.594 140.864 292.705 158.671 263.333 158.671ZM229.799 85.1275H292.936C290.855 67.5509 278.597 57.6063 261.252 57.6063C245.294 57.6063 231.649 68.2448 229.799 85.1275Z" fill="black"/>
+      <path fill-rule="evenodd" clip-rule="evenodd" d="M351.082 37.6353H378.012V58.8499H351.082V126.322C351.082 130.484 351.867 133.182 353.492 134.855C355.112 136.522 357.699 137.305 361.644 137.305H378.012V158.519H357.01C346.606 158.519 339.096 156.078 334.198 151.044C329.303 146.013 327.129 138.508 327.129 128.639V0H351.082V37.6353ZM353.231 135.444C353.25 135.463 353.271 135.481 353.291 135.499C353.267 135.477 353.243 135.456 353.22 135.433L353.231 135.444Z" fill="black"/>
+    </svg>
+    <div class="header-divider"></div>
+    <span class="page-label">Constrained-Off</span>
+  </div>
 
   <div class="card">
-  <div class="card-header">
-    <div class="card-meta-inline">
-      <span id="pld-date">PLD atualizado até: —</span>
-      <span id="ons-date">Dados ONS atualizados até: —</span>
+    <div class="card-header">
+      <div class="card-meta-inline">
+        <span id="pld-date">PLD atualizado até: —</span>
+        <span id="ons-date">Dados ONS atualizados até: —</span>
+      </div>
+      <button id="btnReload">Recarregar</button>
     </div>
-
-    <button id="btnReload">Recarregar</button>
+    <div class="card-status">
+      <span id="status">Carregando...</span>
+    </div>
   </div>
-
-  <div class="card-status">
-    <span id="status">Carregando...</span>
-  </div>
-</div>
-
-
 
   <div class="card">
     <h2>Filtros</h2>
@@ -184,15 +233,13 @@
       <div>
         <label>Empresa</label>
         <select id="company" multiple size="5"></select>
-<small>Ctrl para selecionar várias empresas</small>
-
+        <small>Ctrl para selecionar várias empresas</small>
       </div>
 
       <div>
-        <label>Nome da usina (buscar e selecionar)</label>
-<input id="idSearch" placeholder="buscar usina...">
-<select id="idons" multiple size="5"></select>
-
+        <label>Nome da usina</label>
+        <input id="idSearch" placeholder="buscar usina...">
+        <select id="idons" multiple size="5"></select>
         <small>Ctrl para selecionar vários</small>
       </div>
 
@@ -209,36 +256,31 @@
       </div>
     </div>
 
-    <div style="margin-top:12px">
+    <div style="margin-top:12px;display:flex;gap:8px">
       <button id="apply" class="btn">Aplicar</button>
-<button id="clear" class="btn">Limpar</button>
-
+      <button id="clear" class="btn" style="color:var(--muted);background:transparent">Limpar</button>
     </div>
   </div>
 
   <div class="grid" style="grid-template-columns:repeat(4,1fr);gap:12px">
-  <div class="card">
-    <h3>% corte</h3>
-    <div id="kpiPct" class="kpi kpiAccent">—</div>
+    <div class="card">
+      <h3>% corte</h3>
+      <div id="kpiPct" class="kpi kpiAccent">—</div>
+    </div>
+    <div class="card">
+      <h3>Corte (MWh)</h3>
+      <div id="kpiCut" class="kpi">—</div>
+    </div>
+    <div class="card">
+      <h3>Referência (MWh)</h3>
+      <div id="kpiRef" class="kpi">—</div>
+    </div>
+    <div class="card">
+      <h3>Impacto Financeiro (R$ mm)</h3>
+      <div id="kpiImpact" class="kpi kpiAccent2">—</div>
+      <small id="kpiImpactNote"></small>
+    </div>
   </div>
-
-  <div class="card">
-    <h3>Corte (MWh)</h3>
-    <div id="kpiCut" class="kpi">—</div>
-  </div>
-
-  <div class="card">
-    <h3>Referência (MWh)</h3>
-    <div id="kpiRef" class="kpi">—</div>
-  </div>
-
-  <div class="card">
-    <h3>Impacto Financeiro (R$ mm)</h3>
-    <div id="kpiImpact" class="kpi kpiAccent">—</div>
-    <small id="kpiImpactNote"></small>
-  </div>
-
-</div>
 
   <div class="card">
     <h2>Evolução mensal</h2>
@@ -256,5 +298,3 @@
 <script src="./app.js"></script>
 </body>
 </html>
-
-
