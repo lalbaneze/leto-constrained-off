@@ -405,12 +405,8 @@ function rowPasses(r, f){
   return true;
 }
 function aggregateMonthlyByCompanyWithReasons(rows){
-  // months: labels (YYYY-MM-DD no “fechamento”)
-  // monthKeys: YYYY-MM
-  // companies: lista empresas
-  // series[empresa][i] -> {mesKey,xLabel,corte,ref,pct, ENE,CNF,REL,SEM}
-  const by = new Map(); // key: emp||mes -> agg
-  const byMonthLast = new Map(); // mes -> last_instante max (p/ label)
+  const by = new Map();
+  const byMonthLast = new Map();
 
   for(const r of rows){
     const emp = r.empresa || "Não mapeada";
@@ -434,12 +430,10 @@ function aggregateMonthlyByCompanyWithReasons(rows){
     }
     const a = by.get(key);
 
-    // last_instante do par (empresa, mês)
     if(r.last_instante && (!a.last_instante || r.last_instante > a.last_instante)){
       a.last_instante = r.last_instante;
     }
 
-    // last_instante global do mês (pra label)
     if(r.last_instante && (!byMonthLast.get(mes) || r.last_instante > byMonthLast.get(mes))){
       byMonthLast.set(mes, r.last_instante);
     }
@@ -483,17 +477,8 @@ function aggregateMonthlyByCompanyWithReasons(rows){
 }
 
 function aggregateMonthlyByCompany(rows){
-  // retorna:
-  // {
-  //   months: ["2025-01-31", ...]  (labels já no "último dia")
-  //   monthKeys: ["2025-01", ...]
-  //   companies: ["Auren","Copel",...]
-  //   series: { "Auren": [{mesKey, xLabel, corte, ref, pct}], ... }
-  //   totalByMonth: [{xLabel, corte, ref, pct}]
-  // }
-
-  const byCompanyMonth = new Map(); // key: empresa||mes -> agg
-  const byMonthTotal = new Map();   // key: mes -> total agg
+  const byCompanyMonth = new Map();
+  const byMonthTotal = new Map();
 
   for(const r of rows){
     const emp = r.empresa || "Não mapeada";
@@ -575,16 +560,11 @@ async function applyFilters(){
   const totalRef   = filtered.reduce((s,r)=>s+r.generation_mwh,0);
   const pct = totalRef>0 ? totalCorte/totalRef : 0;
 
-  // -----------------------------
-  // KPI: Impacto Financeiro (mensal)
-  // Impacto = Σ_meses (corte_mwh_mes * pld_medio_mensal_mes)
-  // -----------------------------
   const impactEl = safeGet("kpiImpact");
   const noteEl = safeGet("kpiImpactNote");
 
   if (impactEl) {
     try {
-      // 1) soma corte por mês (YYYY-MM)
       const cortePorMes = new Map();
       for (const r of filtered) {
         if (!r.mes) continue;
@@ -597,13 +577,12 @@ async function applyFilters(){
         impactEl.textContent = "—";
         if (noteEl) noteEl.textContent = "Sem dados no filtro.";
       } else {
-        // 2) busca PLD médio mensal e soma impacto
         let impactoR$ = 0;
         const mesesSemPLD = [];
 
         for (const ym of meses) {
           const corteMes = cortePorMes.get(ym) || 0;
-          const pldMes = await buscarPLDMonthlyAvg(ym); // pode vir null
+          const pldMes = await buscarPLDMonthlyAvg(ym);
 
           if (pldMes === null || pldMes === undefined) {
             mesesSemPLD.push(ym);
@@ -638,7 +617,6 @@ async function applyFilters(){
   safeGet("kpiCut").textContent = fmtMWh(totalCorte);
   safeGet("kpiRef").textContent = fmtMWh(totalRef);
 
-  // Para os gráficos:
   const companiesSelected = f.companies || [];
 
  if(companiesSelected.length >= 2){
@@ -652,7 +630,6 @@ async function applyFilters(){
 
 /* ===============================
    CASCADE: empresa -> usinas
-   (quando escolhe empresa, lista de usinas vira só daquela(s))
 ================================ */
 function refreshUsinaOptionsByCompany(){
   const companies = getSelectedMulti(safeGet("company"));
@@ -679,48 +656,89 @@ function applySearchFilter(){
 
 /* ===============================
    CHARTS
+   ── Paleta Leto Capital ──
+   Fundo/papel : #1A1A18 (card dark)
+   Grid/eixos  : #2e2d29 (border)
+   Texto       : #F0EDE6 (off-white quente)
+   Texto muted : #BDB7A7 (cinza Leto)
+
+   Séries:
+     ENE  → #D8EEA9  (verde Leto — principal, maior volume)
+     CNF  → #7F9657  (verde médio — sucesso)
+     REL  → #956A49  (marrom Leto)
+     SEM  → #505050  (neutro 700)
+
+   Linha % corte (modo normal) → #BDB7A7 (cinza Leto)
+
+   Paleta comparativa (empresas):
+     usa a paleta categórica do brand book
 ================================ */
 function drawCharts(data, comparative){
-  // Paleta
-  const NAVY  = "#0b1d3a";
-  const GREEN = "#22c55e";
-  const GRAY_DARK  = "#6b7280";
-  const GRAY_LIGHT = "#d1d5db";
+
+  // ── Leto color tokens ──
+  const C_BG       = "#1A1A18";   // papel / fundo do gráfico
+  const C_GRID     = "#2e2d29";   // gridlines
+  const C_TEXT     = "#F0EDE6";   // texto principal
+  const C_MUTED    = "#BDB7A7";   // cinza Leto — texto secundário, linha %
+  const C_BORDER   = "#3a3935";   // bordas leve
+
+  // cores das razões (paleta categórica Leto)
+  const C_ENE      = "#D8EEA9";   // verde Leto claro
+  const C_CNF      = "#7F9657";   // verde médio
+  const C_REL      = "#956A49";   // marrom Leto
+  const C_SEM      = "#505050";   // neutro 700
+
+  // paleta comparativa (12 categorias do brand book)
+  const PALETTE_COMP = [
+    "#000000",  // 01 preto
+    "#7B776C",  // 02 neutro quente
+    "#BDB7A7",  // 03 cinza Leto
+    "#7F9657",  // 04 verde escuro
+    "#A7C878",  // 05 verde médio
+    "#D8EEA9",  // 06 verde Leto
+    "#956A49",  // 07 marrom Leto
+    "#C08B63",  // 08 marrom claro
+    "#65798F",  // 09 azul acinzentado
+    "#94A6BA",  // 10 azul claro
+    "#8C89A7",  // 11 lilás
+    "#CFCBDA"   // 12 lilás claro
+  ];
 
   const baseLayout = {
-    margin: { t: 20, r: 60, l: 60, b: 60 },
-    paper_bgcolor: "white",
-    plot_bgcolor: "white",
-    font: { color: "#111827" },
+    margin: { t: 32, r: 60, l: 60, b: 60 },
+    paper_bgcolor: C_BG,
+    plot_bgcolor:  C_BG,
+    font: { color: C_TEXT, family: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial" },
     xaxis: {
       title: "Fechamento do mês",
       type: "category",
       showgrid: true,
-      gridcolor: "#e5e7eb",
+      gridcolor: C_GRID,
       zeroline: false,
-      linecolor: "#9ca3af",
-      tickfont: { color: "#111827" },
-      titlefont: { color: "#111827" }
+      linecolor: C_BORDER,
+      tickfont:  { color: C_MUTED },
+      titlefont: { color: C_MUTED }
     },
     yaxis: {
       title: "MWh",
       showgrid: true,
-      gridcolor: "#e5e7eb",
+      gridcolor: C_GRID,
       zeroline: false,
-      linecolor: "#9ca3af",
-      tickfont: { color: "#111827" },
-      titlefont: { color: "#111827" }
+      linecolor: C_BORDER,
+      tickfont:  { color: C_MUTED },
+      titlefont: { color: C_MUTED }
     },
     hovermode: "x unified",
     hoverlabel: {
-      bgcolor: "white",
-      bordercolor: "#111827",
-      font: { color: "#111827" }
+      bgcolor: "#111110",
+      bordercolor: C_BORDER,
+      font: { color: C_TEXT }
     },
     legend: {
-      bgcolor: "rgba(255,255,255,0.85)",
-      bordercolor: "#e5e7eb",
-      borderwidth: 1
+      bgcolor: "rgba(26,26,24,0.85)",
+      bordercolor: C_BORDER,
+      borderwidth: 1,
+      font: { color: C_TEXT }
     }
   };
 
@@ -736,7 +754,7 @@ function drawCharts(data, comparative){
         y: data.map(d => d.corte),
         type: "bar",
         name: "Corte (MWh)",
-        marker: { color: GREEN }
+        marker: { color: C_ENE }
       },
       {
         x,
@@ -745,8 +763,8 @@ function drawCharts(data, comparative){
         type: "scatter",
         mode: "lines+markers",
         name: "% corte",
-        line: { color: NAVY, width: 3 },
-        marker: { color: NAVY, size: 7 }
+        line:   { color: C_MUTED, width: 3 },
+        marker: { color: C_MUTED, size: 7 }
       }
     ], {
       ...baseLayout,
@@ -756,75 +774,61 @@ function drawCharts(data, comparative){
         side: "right",
         showgrid: false,
         zeroline: false,
-        linecolor: "#9ca3af",
-        tickfont: { color: "#111827" },
-        titlefont: { color: "#111827" }
+        linecolor: C_BORDER,
+        tickfont:  { color: C_MUTED },
+        titlefont: { color: C_MUTED }
       }
     }, { displayModeBar: false });
 
-  Plotly.newPlot("chartReason", [
-  {
-    x,
-    y: data.map(d => (d.ref > 0 ? (d.ENE / d.ref) * 100 : 0)),
-    type: "bar",
-    name: "ENE",
-    marker: { color: GREEN },
-    hovertemplate: "ENE<br>%{x}<br>%{y:.2f} pp<extra></extra>"
-  },
-  {
-    x,
-    y: data.map(d => (d.ref > 0 ? (d.CNF / d.ref) * 100 : 0)),
-    type: "bar",
-    name: "CNF",
-    marker: { color: NAVY },
-    hovertemplate: "CNF<br>%{x}<br>%{y:.2f} pp<extra></extra>"
-  },
-  {
-    x,
-    y: data.map(d => (d.ref > 0 ? (d.REL / d.ref) * 100 : 0)),
-    type: "bar",
-    name: "REL",
-    marker: { color: GRAY_DARK },
-    hovertemplate: "REL<br>%{x}<br>%{y:.2f} pp<extra></extra>"
-  },
-  {
-    x,
-    y: data.map(d => (d.ref > 0 ? (d.SEM / d.ref) * 100 : 0)),
-    type: "bar",
-    name: "SEM",
-    marker: { color: GRAY_LIGHT },
-    hovertemplate: "SEM<br>%{x}<br>%{y:.2f} pp<extra></extra>"
-  }
-], {
-  ...baseLayout,
-  barmode: "stack",
-  yaxis: { ...baseLayout.yaxis, title: "% corte (pp)", ticksuffix: "%" }
-}, { displayModeBar:false });
-
+    Plotly.newPlot("chartReason", [
+      {
+        x,
+        y: data.map(d => (d.ref > 0 ? (d.ENE / d.ref) * 100 : 0)),
+        type: "bar",
+        name: "ENE",
+        marker: { color: C_ENE },
+        hovertemplate: "ENE<br>%{x}<br>%{y:.2f} pp<extra></extra>"
+      },
+      {
+        x,
+        y: data.map(d => (d.ref > 0 ? (d.CNF / d.ref) * 100 : 0)),
+        type: "bar",
+        name: "CNF",
+        marker: { color: C_CNF },
+        hovertemplate: "CNF<br>%{x}<br>%{y:.2f} pp<extra></extra>"
+      },
+      {
+        x,
+        y: data.map(d => (d.ref > 0 ? (d.REL / d.ref) * 100 : 0)),
+        type: "bar",
+        name: "REL",
+        marker: { color: C_REL },
+        hovertemplate: "REL<br>%{x}<br>%{y:.2f} pp<extra></extra>"
+      },
+      {
+        x,
+        y: data.map(d => (d.ref > 0 ? (d.SEM / d.ref) * 100 : 0)),
+        type: "bar",
+        name: "SEM",
+        marker: { color: C_SEM },
+        hovertemplate: "SEM<br>%{x}<br>%{y:.2f} pp<extra></extra>"
+      }
+    ], {
+      ...baseLayout,
+      barmode: "stack",
+      yaxis: { ...baseLayout.yaxis, title: "% corte (pp)", ticksuffix: "%" }
+    }, { displayModeBar: false });
 
     return;
   }
 
   // ---------------------------
   // MODO COMPARATIVO (2+ empresas)
-  // data = aggregateMonthlyByCompanyWithReasons()
   // ---------------------------
   const x = data.months;
 
-  const paletteCompanies = [
-  "#16a34a", // verde
-  "#0b1d3a", // navy
-  "#4b5563", // cinza escuro
-  "#d1d5db", // cinza claro
-  "#065f46", // verde escuro
-  "#22c55e", // verde claro
-  "#64748b", // slate
-  "#10b981"  // teal
-];
-
-
   const companyColor = {};
-  data.companies.forEach((emp, i) => companyColor[emp] = paletteCompanies[i % paletteCompanies.length]);
+  data.companies.forEach((emp, i) => companyColor[emp] = PALETTE_COMP[i % PALETTE_COMP.length]);
 
   // Gráfico 1: barras corte + linhas % por empresa
   const tracesTop = [];
@@ -849,7 +853,7 @@ function drawCharts(data, comparative){
       type: "scatter",
       mode: "lines+markers",
       name: `% corte · ${emp}`,
-      line: { color: companyColor[emp], width: 2 },
+      line:   { color: companyColor[emp], width: 2 },
       marker: { color: companyColor[emp], size: 6 }
     });
   });
@@ -863,84 +867,71 @@ function drawCharts(data, comparative){
       side: "right",
       showgrid: false,
       zeroline: false,
-      linecolor: "#9ca3af",
-      tickfont: { color: "#111827" },
-      titlefont: { color: "#111827" }
+      linecolor: C_BORDER,
+      tickfont:  { color: C_MUTED },
+      titlefont: { color: C_MUTED }
     }
   }, { displayModeBar: false });
 
-// Gráfico 2 (comparativo): build-up da % (pp) por razão
-// barras lado a lado por empresa com "códigos" (1,2,3...) para não poluir
-const reasons = ["ENE", "CNF", "REL", "SEM"];
-const reasonColor = { ENE: GREEN, CNF: NAVY, REL: GRAY_DARK, SEM: GRAY_LIGHT };
+  // Gráfico 2 (comparativo): build-up da % (pp) por razão
+  const reasons = ["ENE", "CNF", "REL", "SEM"];
+  const reasonColor = { ENE: C_ENE, CNF: C_CNF, REL: C_REL, SEM: C_SEM };
 
-const tracesBottom = [];
+  const tracesBottom = [];
 
-const monthLabels = data.months;     // ["2025-01-31", ...]
-const monthKeys   = data.monthKeys;  // ["2025-01", ...]
+  const monthLabels = data.months;
+  const monthKeys   = data.monthKeys;
 
-// ---- chave empresa -> código curto ----
-const empCode = {};
-data.companies.forEach((emp, idx) => { empCode[emp] = String(idx + 1); });
+  const empCode = {};
+  data.companies.forEach((emp, idx) => { empCode[emp] = String(idx + 1); });
 
-// texto da chave (mostra no topo do gráfico)
-const keyText = data.companies
-  .map(emp => `${empCode[emp]}=${emp}`)
-  .join(" · ");
+  reasons.forEach(rr => {
+    const xMonth = [];
+    const xEmpCode = [];
+    const y = [];
 
-// multicategory: [mês, código]
-reasons.forEach(rr => {
-  const xMonth = [];
-  const xEmpCode = [];
-  const y = [];
+    monthKeys.forEach((m, i) => {
+      const mlab = monthLabels[i] || m;
 
-  // iterar mês primeiro pra agrupar por mês
-  monthKeys.forEach((m, i) => {
-    const mlab = monthLabels[i] || m;
+      data.companies.forEach(emp => {
+        const p = data.series[emp][i];
+        const pp = (p && p.ref > 0) ? (((p[rr] || 0) / p.ref) * 100) : 0;
 
-    data.companies.forEach(emp => {
-      const p = data.series[emp][i];
-      const pp = (p && p.ref > 0) ? (((p[rr] || 0) / p.ref) * 100) : 0;
+        xMonth.push(mlab);
+        xEmpCode.push(empCode[emp]);
+        y.push(pp);
+      });
+    });
 
-      xMonth.push(mlab);
-      xEmpCode.push(empCode[emp]);   // <-- aqui vai 1,2,3...
-      y.push(pp);
+    tracesBottom.push({
+      type: "bar",
+      name: rr,
+      x: [xMonth, xEmpCode],
+      y,
+      marker: { color: reasonColor[rr] },
+      hovertemplate: `${rr}<br>%{x}<br>%{y:.2f} pp<extra></extra>`
     });
   });
 
-  tracesBottom.push({
-    type: "bar",
-    name: rr,
-    x: [xMonth, xEmpCode],
-    y,
-    marker: { color: reasonColor[rr] },
-    hovertemplate: `${rr}<br>%{x}<br>%{y:.2f} pp<extra></extra>`
-  });
-});
-
-Plotly.newPlot("chartReason", tracesBottom, {
-  ...baseLayout,
-  barmode: "relative",
-  yaxis: { ...baseLayout.yaxis, title: "% corte (pp)", ticksuffix: "%" },
-  xaxis: {
-    ...baseLayout.xaxis,
-    title: "Fechamento do mês",
-    type: "multicategory",
-    tickangle: -35
-  },
-  // mostra a chave acima do gráfico
-  title: {
-  text: data.companies
-    .map(emp => `${empCode[emp]} - ${emp}`)
-    .join("   ·   "),
-  x: 0,
-  xanchor: "left",
-  font: { size: 13, color: "#111827" }
-}
-
-
-}, { displayModeBar: false });
-  return;
+  Plotly.newPlot("chartReason", tracesBottom, {
+    ...baseLayout,
+    barmode: "relative",
+    yaxis: { ...baseLayout.yaxis, title: "% corte (pp)", ticksuffix: "%" },
+    xaxis: {
+      ...baseLayout.xaxis,
+      title: "Fechamento do mês",
+      type: "multicategory",
+      tickangle: -35
+    },
+    title: {
+      text: data.companies
+        .map(emp => `${empCode[emp]} - ${emp}`)
+        .join("   ·   "),
+      x: 0,
+      xanchor: "left",
+      font: { size: 13, color: C_MUTED }
+    }
+  }, { displayModeBar: false });
 }
 
 /* ===============================
@@ -953,14 +944,13 @@ async function init(){
 
   // --- Datas de atualização (PLD / ONS) ---
   try {
-    const maxDiaPLD = await buscarPLDMaxDia(); // vem do pld_meta.json
+    const maxDiaPLD = await buscarPLDMaxDia();
     setPLDUpdatedText(maxDiaPLD);
   } catch(e){
     console.warn("Não consegui ler PLD meta:", e);
     setPLDUpdatedText("—");
   }
 
-  // ONS: usa o maior last_instante (eólico + solar) que veio no CSV
   const lastInst = RAW
     .map(r => (r.last_instante || "").trim())
     .filter(Boolean)
@@ -980,7 +970,6 @@ const eolJan = RAW
 console.log("DEBUG solJan", solJan);
 console.log("DEBUG eolJan", eolJan);
 
-  // transforma "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DD"
   const lastONSDate = isoDateFromLastInstante(lastInst);
 
   setONSUpdatedText(lastONSDate || "—");
