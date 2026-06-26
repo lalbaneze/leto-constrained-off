@@ -2,4 +2,4 @@ pandas
 requests
 openpyxl
 cloudscraper
-
+svglib
